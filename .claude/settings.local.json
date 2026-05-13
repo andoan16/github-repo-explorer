@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem *)",
+      "PowerShell(npm *)",
+      "PowerShell(rustc *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(npm test *)",
+      "Bash(export ELECTRON_BUILDER_CACHE=\"D:/repo-explorer/.cache\")",
+      "Bash(curl -L -o \"D:/repo-explorer/.cache/winCodeSign/winCodeSign-2.6.0.7z\" \"https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z\")",
+      "Bash(npx electron-builder *)",
+      "Bash(node -e ' *)",
+      "Bash(curl -L -o \"D:/repo-explorer/.cache/nsis/nsis-3.0.4.1.7z\" \"https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.4.1/nsis-3.0.4.1.7z\")"
+    ]
+  }
+}
