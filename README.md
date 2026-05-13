@@ -40,20 +40,27 @@ npm run dev
 
 The app window opens automatically. Configure your GitHub token and Ollama URL in Settings (gear icon, top-right), then type a search query.
 
+## Features
+
+- **Multi-query search** — Ollama generates 3 alternative keyword queries from your description, run as parallel GitHub searches with automatic deduplication
+- **Iterative refinement** — Refine results inline (e.g. "more DevOps focused", "prefer Go") to re-rank cached repos without re-hitting GitHub
+- **Lazy explanations** — Match explanations generated on demand when viewing repo details, keeping search fast
+- **Weighted ranking** — 6-signal relevance scoring with adjustable emphasis per refinement
+
 ## How It Works
 
 1. **You type a description** — natural language, no special syntax
-2. **Ollama extracts structured criteria** — keywords, technologies, intent, license preferences
-3. **GitHub search query is built** — from the extracted criteria + user filters
-4. **Repositories are fetched** — metadata, READMEs, topics
-5. **Ranking engine scores each result** — combining 6 signals:
+2. **Ollama extracts structured criteria** — 3 keyword query variations, technologies, intent, license preferences
+3. **Parallel GitHub searches** — all 3 queries run simultaneously, results merged and deduplicated by repo ID
+4. **READMEs are fetched** — for top candidates by stars
+5. **Ranking engine scores each result** — combining 6 signals (weights adjustable via refinement):
    - Semantic keyword/topic match (30%)
    - Stars (20%)
    - Recency of activity (15%)
    - README relevance (15%)
    - Language/framework match (10%)
    - License compatibility (10%)
-6. **Results are displayed** — ranked cards with match explanations and score breakdowns
+6. **Results are displayed** — ranked cards with score badges; click for on-demand match explanation and breakdown
 
 ## Scripts
 
@@ -131,6 +138,7 @@ repo-explorer/
 │   │   ├── github/client.ts     # GitHub REST API client
 │   │   ├── search/query-gen.ts  # LLM query extraction & generation
 │   │   ├── ranking/engine.ts    # Multi-signal relevance scoring
+│   │   ├── bookmarks/store.ts   # JSON bookmark persistence
 │   │   └── settings/store.ts    # JSON settings persistence
 │   ├── renderer/                # React frontend
 │   │   ├── App.tsx              # Root component
@@ -154,13 +162,15 @@ repo-explorer/
 │   │   ├── ollama.ts
 │   │   └── github.ts
 │   ├── unit/
-│   │   └── ranking.test.ts      # Ranking engine unit tests (8 cases)
+│   │   ├── ranking.test.ts      # Ranking engine (9 cases incl. emphasis)
+│   │   ├── query-gen.test.ts    # Query extraction & search params (8 cases)
+│   │   └── bookmarks.test.ts    # Bookmark store logic
 │   └── integration/
 │       ├── ollama.test.ts       # Ollama connection + generation tests
 │       ├── github.test.ts       # GitHub auth + search + README tests
 │       ├── query-gen.test.ts    # Query extraction + param building
-│       ├── e2e.test.ts          # Full pipeline integration
-│       └── error-handling.test.ts  # 12 error cases
+│       ├── e2e.test.ts          # Full pipeline + multi-query + refinement
+│       └── error-handling.test.ts  # 13 error cases
 ├── scripts/
 │   └── build-main.mjs           # esbuild config for main + preload
 ├── package.json                 # Dependencies, scripts, electron-builder config
@@ -195,6 +205,8 @@ The app handles these failure modes:
 - **Empty results** — "No results" state with suggestion to broaden search
 - **LLM malformed output** — Falls back to raw keyword extraction, shows partial results
 - **Network failures** — Retryable error shown, connection status updated
+- **Partial query failure** — If some parallel search queries fail, results from successful queries are still shown
+- **Search superseded** — In-flight searches are cancelled when a new search starts
 
 ## Future Improvements
 
