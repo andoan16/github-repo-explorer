@@ -109,6 +109,7 @@ export const IPC = {
   BOOKMARKS_GET_ALL: 'bookmarks:getAll',
   BOOKMARKS_ADD: 'bookmarks:add',
   BOOKMARKS_REMOVE: 'bookmarks:remove',
+  CLONE_REPO: 'clone:repo',
 } as const;
 
 // ── IPC response wrappers ──

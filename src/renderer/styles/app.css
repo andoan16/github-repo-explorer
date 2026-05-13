@@ -384,6 +384,19 @@ body {
 .copy-btn:hover { background: var(--bg-hover); border-color: var(--border-emphasis); }
 .copy-btn.copied { background: var(--success-subtle); border-color: var(--success); color: var(--success); }
 
+/* ── Clone Button ── */
+.clone-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 3px 8px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--bg); color: var(--text-secondary); font-size: 11px; font-weight: 500;
+  cursor: pointer; transition: all 0.15s; font-family: var(--font); white-space: nowrap;
+}
+.clone-btn:hover:not(:disabled) { background: var(--success-subtle); border-color: var(--success); color: var(--success); }
+.clone-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+.clone-btn.cloning { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent); }
+.clone-btn.cloned { background: var(--success-subtle); border-color: var(--success); color: var(--success); }
+.clone-btn.clone-error { background: var(--error-subtle); border-color: var(--error); color: var(--error); }
+
 /* ── Bookmark Button ── */
 .bookmark-btn {
   display: flex; align-items: center; justify-content: center;

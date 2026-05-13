@@ -11,6 +11,7 @@ const api = {
   getBookmarks: () => ipcRenderer.invoke(IPC.BOOKMARKS_GET_ALL),
   addBookmark: (bookmark: unknown) => ipcRenderer.invoke(IPC.BOOKMARKS_ADD, bookmark),
   removeBookmark: (repoId: number) => ipcRenderer.invoke(IPC.BOOKMARKS_REMOVE, repoId),
+  cloneRepo: (repoUrl: string, repoName: string) => ipcRenderer.invoke(IPC.CLONE_REPO, repoUrl, repoName),
 };
 
 contextBridge.exposeInMainWorld('repoExplorer', api);

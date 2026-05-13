@@ -1,5 +1,5 @@
 import type { GitHubSearchResult } from '../../shared/types';
-import CopyButton from './CopyButton';
+import CloneButton from './CloneButton';
 import BookmarkButton from './BookmarkButton';
 
 interface Props {
@@ -61,7 +61,7 @@ export default function ResultCard({ result, rank, bookmarked, selectedForCompar
         </div>
       </div>
       <div className="result-actions">
-        <CopyButton url={repo.html_url} />
+        <CloneButton repoUrl={repo.html_url} repoName={repo.full_name.split('/')[1]} />
         <BookmarkButton bookmarked={bookmarked} onClick={onBookmark} />
         <button className="find-similar-btn" onClick={(e) => { e.stopPropagation(); onFindSimilar(); }} title="Find similar repositories">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">

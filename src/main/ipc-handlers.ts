@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron';
+import { ipcMain, dialog } from 'electron';
+import { spawn } from 'child_process';
 import { OllamaClient } from './ollama/client';
 import { GitHubClient } from './github/client';
 import { QueryGenerator } from './search/query-gen';
@@ -185,6 +186,52 @@ export function registerIpcHandlers(): void {
     try {
       const all = bookmarks.remove(repoId);
       return { ok: true, data: all };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  // ── Clone ──
+  ipcMain.handle(IPC.CLONE_REPO, async (_event, repoUrl: string, repoName: string) => {
+    try {
+      const { filePaths, canceled } = await dialog.showOpenDialog({
+        title: 'Choose Clone Destination',
+        properties: ['openDirectory', 'createDirectory'],
+        buttonLabel: 'Clone Here',
+      });
+
+      if (canceled || filePaths.length === 0) {
+        return { ok: true, data: { canceled: true } };
+      }
+
+      const targetDir = filePaths[0];
+
+      return new Promise((resolve) => {
+        const proc = spawn('git', ['clone', repoUrl, repoName], {
+          cwd: targetDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            resolve({ ok: true, data: { canceled: false, success: true, path: `${targetDir}\\${repoName}` } });
+          } else {
+            // git clone writes progress to stderr, so check if it actually cloned
+            if (stderr.includes('Receiving objects') && !stderr.includes('fatal:')) {
+              resolve({ ok: true, data: { canceled: false, success: true, path: `${targetDir}\\${repoName}` } });
+            } else {
+              resolve({ ok: false, error: `Clone failed: ${stderr.slice(-200)}` });
+            }
+          }
+        });
+
+        proc.on('error', (err) => {
+          resolve({ ok: false, error: `Failed to start git: ${err.message}. Is git installed?` });
+        });
+      });
     } catch (err) {
       return { ok: false, error: String(err) };
     }

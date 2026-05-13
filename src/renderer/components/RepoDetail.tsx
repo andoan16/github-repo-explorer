@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { marked } from 'marked';
 import type { GitHubSearchResult } from '../../shared/types';
 import MatchExplanation from './MatchExplanation';
-import CopyButton from './CopyButton';
+import CloneButton from './CloneButton';
 import BookmarkButton from './BookmarkButton';
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -42,8 +42,8 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark, on
             </a>
           </div>
           <div className="detail-actions">
+            <CloneButton repoUrl={repo.html_url} repoName={repo.full_name.split('/')[1]} />
             <BookmarkButton bookmarked={bookmarked} onClick={onBookmark} />
-            <CopyButton url={repo.html_url} label="Clone" />
             <button className="btn-primary" onClick={openInBrowser}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
