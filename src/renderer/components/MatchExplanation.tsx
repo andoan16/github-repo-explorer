@@ -3,6 +3,7 @@ import type { RelevanceScore } from '../../shared/types';
 interface Props {
   explanation: string;
   score: RelevanceScore;
+  loading?: boolean;
 }
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
@@ -17,10 +18,12 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-export default function MatchExplanation({ explanation, score }: Props) {
+export default function MatchExplanation({ explanation, score, loading }: Props) {
   return (
     <div className="match-explanation">
-      <p className="match-text">{explanation}</p>
+      <p className={`match-text${loading ? ' match-loading' : ''}`}>
+        {loading ? 'Generating explanation...' : explanation}
+      </p>
       <div className="score-breakdown">
         <ScoreBar label="Semantic" value={score.semanticMatch} />
         <ScoreBar label="Stars" value={score.starsScore} />

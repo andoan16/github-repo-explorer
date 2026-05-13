@@ -54,6 +54,40 @@ export function useSearch() {
     }
   }, []);
 
+  const refine = useCallback(async (refinementText: string) => {
+    if (!refinementText.trim()) return;
+
+    setState({
+      searching: true,
+      hasSearched: true,
+      results: [],
+      totalSearched: 0,
+      error: null,
+    });
+    setSelectedResult(null);
+
+    const res = await window.repoExplorer.refine(refinementText);
+
+    if (res.ok && res.data) {
+      const data = res.data as { results: GitHubSearchResult[]; totalSearched: number; note?: string };
+      setState({
+        searching: false,
+        hasSearched: true,
+        results: data.results,
+        totalSearched: data.totalSearched,
+        error: null,
+      });
+    } else {
+      setState({
+        searching: false,
+        hasSearched: true,
+        results: [],
+        totalSearched: 0,
+        error: res.error ?? 'Unknown error during refinement',
+      });
+    }
+  }, []);
+
   const clear = useCallback(() => {
     setState({
       searching: false,
@@ -65,5 +99,5 @@ export function useSearch() {
     setSelectedResult(null);
   }, []);
 
-  return { ...state, selectedResult, setSelectedResult, execute, clear };
+  return { ...state, selectedResult, setSelectedResult, execute, refine, clear };
 }

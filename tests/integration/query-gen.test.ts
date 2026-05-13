@@ -31,8 +31,9 @@ describe('QueryGenerator (integration)', () => {
     mock.generate.mockResolvedValueOnce('```json\n{"keywords":["test"],"technologies":["Go"],"intent":"other","useCase":"testing","minStars":0,"preferredLicense":null,"requireRecentActivity":false}\n```');
     const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
 
-    const criteria = await qg.extractCriteria('test');
-    expect(criteria.keywords).toEqual(['test']);
+    const criteria = await qg.extractCriteria('test request for a thing');
+    expect(criteria.keywords).toHaveLength(3);
+    expect(criteria.keywords[0]).toBe('test');
     expect(criteria.technologies).toEqual(['Go']);
   });
 
@@ -78,6 +79,27 @@ describe('QueryGenerator (integration)', () => {
 
     const explanation = await qg.generateMatchExplanation('org/ci-tool', 'Docker-native CI/CD', 'I need CI/CD with Docker');
     expect(explanation).toBeTruthy();
+  });
+
+  it('builds search params array with multiple queries', () => {
+    const mock = createMockOllamaClient();
+    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+
+    const paramsArray = qg.buildSearchParamsArray({
+      keywords: ['docker', 'ci-cd', 'pipeline'],
+      technologies: ['Go', 'Docker'],
+      intent: 'devops-tool',
+      useCase: 'CI/CD',
+      minStars: 20,
+      preferredLicense: 'mit',
+      requireRecentActivity: true,
+    });
+
+    expect(paramsArray).toHaveLength(3);
+    expect(paramsArray[0].query).toBe('docker');
+    expect(paramsArray[1].query).toBe('ci-cd');
+    expect(paramsArray[2].query).toBe('pipeline');
+    expect(paramsArray[0].perPage).toBe(30);
   });
 
   it('handles Ollama being unavailable during query generation', async () => {

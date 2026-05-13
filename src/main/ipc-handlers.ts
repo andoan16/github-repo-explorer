@@ -6,11 +6,21 @@ import { QueryGenerator } from './search/query-gen';
 import { RankingEngine } from './ranking/engine';
 import { SettingsStore } from './settings/store';
 import { BookmarkStore } from './bookmarks/store';
-import { IPC, type GitHubSearchResult } from '../shared/types';
+import { IPC, type GitHubRepo, type GitHubSearchResult, type SearchCriteria } from '../shared/types';
 
 const settings = new SettingsStore();
 const bookmarks = new BookmarkStore();
 const rankingEngine = new RankingEngine();
+
+interface CachedSearch {
+  repos: GitHubRepo[];
+  readmes: Map<number, string | null>;
+  originalCriteria: SearchCriteria;
+  originalRequest: string;
+}
+
+let lastSearchCache: CachedSearch | null = null;
+let searchGeneration = 0;
 
 function getOllamaClient() {
   const cfg = settings.load();
@@ -72,6 +82,7 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.SEARCH, async (_event, userRequest: string, filters?: { language?: string | null; license?: string | null; minStars?: number }) => {
+    const gen = ++searchGeneration;
     try {
       const cfg = settings.load();
       const ollama = getOllamaClient();
@@ -82,6 +93,7 @@ export function registerIpcHandlers(): void {
       try {
         criteria = await qg.extractCriteria(userRequest);
       } catch (llmErr) {
+        if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
         const message = llmErr instanceof Error ? llmErr.message : String(llmErr);
         return {
           ok: false,
@@ -89,18 +101,40 @@ export function registerIpcHandlers(): void {
         };
       }
 
-      const params = qg.buildSearchParams(criteria, filters);
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
-      let repos;
-      let totalCount;
-      try {
-        const result = await github.searchRepos(params);
-        repos = result.repos;
-        totalCount = result.totalCount;
-      } catch (ghErr) {
-        const message = ghErr instanceof Error ? ghErr.message : String(ghErr);
+      const allParams = qg.buildSearchParamsArray(criteria, filters);
+
+      const searchResults = await Promise.allSettled(
+        allParams.map((params) => github.searchRepos(params)),
+      );
+
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
+      const failedQueries = searchResults.filter((r) => r.status === 'rejected').length;
+      const successfulResults = searchResults
+        .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof github.searchRepos>>> => r.status === 'fulfilled')
+        .map((r) => r.value);
+
+      if (successfulResults.length === 0) {
+        const firstError = (searchResults[0] as PromiseRejectedResult).reason;
+        const message = firstError instanceof Error ? firstError.message : String(firstError);
         return { ok: false, error: `GitHub search failed: ${message}` };
       }
+
+      // Merge and deduplicate by repo ID (keep higher stars on collision)
+      const repoMap = new Map<number, GitHubRepo>();
+      let totalCount = 0;
+      for (const result of successfulResults) {
+        totalCount += result.totalCount;
+        for (const repo of result.repos) {
+          const existing = repoMap.get(repo.id);
+          if (!existing || repo.stars > existing.stars) {
+            repoMap.set(repo.id, repo);
+          }
+        }
+      }
+      const repos = [...repoMap.values()];
 
       if (repos.length === 0) {
         return {
@@ -108,7 +142,7 @@ export function registerIpcHandlers(): void {
           data: {
             results: [],
             totalSearched: 0,
-            queryUsed: params.query,
+            queryUsed: criteria.keywords.join(' | '),
             note: 'No repositories matched. Try broadening your description or reducing filter constraints.',
           },
         };
@@ -132,33 +166,102 @@ export function registerIpcHandlers(): void {
         }),
       );
 
-      const ranked = rankingEngine.rank(repos, criteria, readmes, userRequest, cfg.maxResults);
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
-      const topN = ranked.slice(0, 8);
-      const explanations = await Promise.all(
-        topN.map(async ({ repo }) => {
-          try {
-            const explanation = await qg.generateMatchExplanation(
-              repo.full_name,
-              repo.description,
-              userRequest,
-            );
-            return { id: repo.id, explanation };
-          } catch {
-            return { id: repo.id, explanation: `Matches search criteria: ${repo.description ?? repo.full_name}` };
-          }
-        }),
-      );
-      const explanationMap = new Map(explanations.map((e) => [e.id, e.explanation]));
+      const ranked = rankingEngine.rank(repos, criteria, readmes, userRequest, cfg.maxResults);
 
       const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
         repo,
         readme: readmes.get(repo.id) ?? null,
         score,
-        matchExplanation: explanationMap.get(repo.id) ?? `Matches based on search keywords and repository metadata.`,
+        matchExplanation: `Score: ${Math.round(score.total * 100)}% match`,
+        requestContext: userRequest,
       }));
 
-      return { ok: true, data: { results, totalSearched: repos.length } };
+      const note = failedQueries > 0
+        ? `${failedQueries}/${allParams.length} search queries failed; showing results from ${successfulResults.length} queries.`
+        : undefined;
+
+      lastSearchCache = { repos, readmes, originalCriteria: criteria, originalRequest: userRequest };
+
+      return { ok: true, data: { results, totalSearched: repos.length, note } };
+    } catch (err) {
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Refinement ──
+  ipcMain.handle(IPC.SEARCH_REFINE, async (_event, refinementText: string) => {
+    const gen = ++searchGeneration;
+    try {
+      if (!lastSearchCache) {
+        return { ok: false, error: 'No search to refine. Run a search first.' };
+      }
+
+      const cfg = settings.load();
+      const ollama = getOllamaClient();
+      const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+
+      let refinedCriteria: SearchCriteria;
+      try {
+        refinedCriteria = await qg.refineCriteria(
+          lastSearchCache.originalCriteria,
+          refinementText,
+          lastSearchCache.originalRequest,
+        );
+      } catch (llmErr) {
+        if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+        const message = llmErr instanceof Error ? llmErr.message : String(llmErr);
+        return { ok: false, error: `Refinement analysis failed: ${message}` };
+      }
+
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
+      const ranked = rankingEngine.rank(
+        lastSearchCache.repos,
+        refinedCriteria,
+        lastSearchCache.readmes,
+        lastSearchCache.originalRequest,
+        cfg.maxResults,
+        refinedCriteria.weightEmphasis,
+      );
+
+      const refinedContext = `${lastSearchCache.originalRequest} (refined: ${refinementText})`;
+      const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
+        repo,
+        readme: lastSearchCache!.readmes.get(repo.id) ?? null,
+        score,
+        matchExplanation: `Score: ${Math.round(score.total * 100)}% match (refined)`,
+        requestContext: refinedContext,
+      }));
+
+      return {
+        ok: true,
+        data: {
+          results,
+          totalSearched: lastSearchCache.repos.length,
+          note: `Re-ranked with refinement: "${refinementText}"`,
+        },
+      };
+    } catch (err) {
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Explanation (lazy-loaded) ──
+  ipcMain.handle(IPC.GENERATE_EXPLANATION, async (_event, params: { repoName: string; repoDescription: string | null; requestContext: string }) => {
+    try {
+      const cfg = settings.load();
+      const ollama = getOllamaClient();
+      const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+      const explanation = await qg.generateMatchExplanation(
+        params.repoName,
+        params.repoDescription,
+        params.requestContext,
+      );
+      return { ok: true, data: { explanation } };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

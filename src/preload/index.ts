@@ -12,6 +12,9 @@ const api = {
   addBookmark: (bookmark: unknown) => ipcRenderer.invoke(IPC.BOOKMARKS_ADD, bookmark),
   removeBookmark: (repoId: number) => ipcRenderer.invoke(IPC.BOOKMARKS_REMOVE, repoId),
   cloneRepo: (repoUrl: string, repoName: string) => ipcRenderer.invoke(IPC.CLONE_REPO, repoUrl, repoName),
+  refine: (refinementText: string) => ipcRenderer.invoke(IPC.SEARCH_REFINE, refinementText),
+  generateExplanation: (repoName: string, repoDescription: string | null, requestContext: string) =>
+    ipcRenderer.invoke(IPC.GENERATE_EXPLANATION, { repoName, repoDescription, requestContext }),
 };
 
 contextBridge.exposeInMainWorld('repoExplorer', api);

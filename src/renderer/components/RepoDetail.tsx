@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { marked } from 'marked';
 import type { GitHubSearchResult } from '../../shared/types';
 import MatchExplanation from './MatchExplanation';
@@ -12,11 +12,27 @@ interface Props {
   bookmarked: boolean;
   onClose: () => void;
   onBookmark: (e: React.MouseEvent) => void;
-  onFindSimilar: () => void;
 }
 
-export default function RepoDetail({ result, bookmarked, onClose, onBookmark, onFindSimilar }: Props) {
-  const { repo, readme, score, matchExplanation } = result;
+export default function RepoDetail({ result, bookmarked, onClose, onBookmark }: Props) {
+  const { repo, readme, score, matchExplanation, requestContext } = result;
+
+  const [explanation, setExplanation] = useState(matchExplanation);
+  const [explanationLoading, setExplanationLoading] = useState(false);
+
+  useEffect(() => {
+    if (requestContext && matchExplanation.startsWith('Score:')) {
+      setExplanationLoading(true);
+      window.repoExplorer.generateExplanation(repo.full_name, repo.description, requestContext)
+        .then((res) => {
+          if (res.ok && res.data) {
+            setExplanation((res.data as { explanation: string }).explanation);
+          }
+        })
+        .catch(() => {})
+        .finally(() => setExplanationLoading(false));
+    }
+  }, [repo.full_name, repo.description, matchExplanation, requestContext]);
 
   const readmeHtml = useMemo(() => {
     if (!readme) return null;
@@ -93,7 +109,7 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark, on
           </div>
         )}
 
-        <MatchExplanation explanation={matchExplanation} score={score} />
+        <MatchExplanation explanation={explanation} score={score} loading={explanationLoading} />
 
         {readmeHtml && (
           <details className="detail-readme" open>

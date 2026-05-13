@@ -1,8 +1,8 @@
-import type { GitHubRepo, RelevanceScore } from '../../shared/types';
+import type { GitHubRepo, RelevanceScore, WeightEmphasis } from '../../shared/types';
 import type { SearchCriteria } from '../../shared/types';
 
 export class RankingEngine {
-  scoreRepo(repo: GitHubRepo, criteria: SearchCriteria, readme: string | null, userRequest: string): RelevanceScore {
+  scoreRepo(repo: GitHubRepo, criteria: SearchCriteria, readme: string | null, userRequest: string, emphasis?: WeightEmphasis): RelevanceScore {
     const starsScore = this.normalizeStars(repo.stars);
     const activityScore = this.activitySignal(repo.updated_at);
     const languageMatch = this.matchLanguage(repo.language, criteria.technologies);
@@ -10,13 +10,41 @@ export class RankingEngine {
     const readmeRelevance = this.readmeSignal(readme, criteria.keywords);
     const semanticMatch = this.baseSemanticScore(repo, criteria, userRequest);
 
+    const defaultWeights = {
+      semanticMatch: 0.30,
+      starsScore: 0.20,
+      activityScore: 0.15,
+      readmeRelevance: 0.15,
+      languageMatch: 0.10,
+      licenseCompatibility: 0.10,
+    };
+
+    const effectiveWeights = emphasis
+      ? { ...defaultWeights }
+      : defaultWeights;
+
+    if (emphasis) {
+      effectiveWeights.semanticMatch *= emphasis.semanticMatch;
+      effectiveWeights.starsScore *= emphasis.starsScore;
+      effectiveWeights.activityScore *= emphasis.activityScore;
+      effectiveWeights.readmeRelevance *= emphasis.readmeRelevance;
+      effectiveWeights.languageMatch *= emphasis.languageMatch;
+      effectiveWeights.licenseCompatibility *= emphasis.licenseCompatibility;
+
+      // Normalize so weights sum to 1.0
+      const sum = Object.values(effectiveWeights).reduce((a, b) => a + b, 0);
+      for (const key of Object.keys(effectiveWeights) as (keyof typeof effectiveWeights)[]) {
+        effectiveWeights[key] /= sum;
+      }
+    }
+
     const total = Math.round(
-      (semanticMatch * 0.30 +
-       starsScore * 0.20 +
-       activityScore * 0.15 +
-       readmeRelevance * 0.15 +
-       languageMatch * 0.10 +
-       licenseCompatibility * 0.10) * 100
+      (semanticMatch * effectiveWeights.semanticMatch +
+       starsScore * effectiveWeights.starsScore +
+       activityScore * effectiveWeights.activityScore +
+       readmeRelevance * effectiveWeights.readmeRelevance +
+       languageMatch * effectiveWeights.languageMatch +
+       licenseCompatibility * effectiveWeights.licenseCompatibility) * 100
     ) / 100;
 
     return {
@@ -36,12 +64,13 @@ export class RankingEngine {
     readmes: Map<number, string | null>,
     userRequest: string,
     maxResults: number,
+    emphasis?: WeightEmphasis,
   ): { repo: GitHubRepo; score: RelevanceScore }[] {
     const scored = repos
       .filter((r) => !r.archived)
       .map((repo) => ({
         repo,
-        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest),
+        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis),
       }));
 
     scored.sort((a, b) => b.score.total - a.score.total);

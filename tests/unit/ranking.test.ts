@@ -106,4 +106,57 @@ describe('RankingEngine', () => {
     const ranked = engine.rank([recent, old], criteria, readmes, 'CI/CD', 10);
     expect(ranked[0].score.activityScore).toBeGreaterThan(ranked[1].score.activityScore);
   });
+
+  it('applies weight emphasis multipliers', () => {
+    const repo = makeMockRepo({
+      full_name: 'org/test',
+      description: 'A test repo',
+      stars: 5000,
+      language: 'Go',
+      license: { key: 'mit', name: 'MIT' },
+      updated_at: new Date().toISOString(),
+    });
+
+    const noEmphasis = engine.scoreRepo(repo, criteria, 'README content here', 'CI/CD tool');
+
+    const emphasis = {
+      semanticMatch: 2.0,
+      starsScore: 1.0,
+      activityScore: 1.0,
+      readmeRelevance: 1.0,
+      languageMatch: 1.0,
+      licenseCompatibility: 1.0,
+    };
+
+    const withEmphasis = engine.scoreRepo(repo, criteria, 'README content here', 'CI/CD tool', emphasis);
+
+    // With semanticMatch emphasis at 2.0, the total should differ
+    expect(withEmphasis.total).not.toBe(noEmphasis.total);
+  });
+
+  it('emphasis of 1.0 on all signals produces same scores as no emphasis', () => {
+    const repo = makeMockRepo({
+      full_name: 'org/test',
+      description: 'A test repo',
+      stars: 5000,
+      language: 'Go',
+      license: { key: 'mit', name: 'MIT' },
+      updated_at: new Date().toISOString(),
+    });
+
+    const noEmphasis = engine.scoreRepo(repo, criteria, 'README content here', 'CI/CD tool');
+
+    const neutralEmphasis = {
+      semanticMatch: 1.0,
+      starsScore: 1.0,
+      activityScore: 1.0,
+      readmeRelevance: 1.0,
+      languageMatch: 1.0,
+      licenseCompatibility: 1.0,
+    };
+
+    const withEmphasis = engine.scoreRepo(repo, criteria, 'README content here', 'CI/CD tool', neutralEmphasis);
+
+    expect(withEmphasis.total).toBe(noEmphasis.total);
+  });
 });

@@ -14,7 +14,7 @@ export function createMockOllamaClient() {
       models: mockModels,
     } as OllamaStatus),
     listModels: vi.fn().mockResolvedValue(mockModels),
-    generate: vi.fn().mockResolvedValue('{"searchQuery":"CI/CD Docker self-hosted","technologies":["Docker","Go","Python"],"intent":"devops-tool","minStars":50,"preferredLicense":"mit","requireRecentActivity":true}'),
+    generate: vi.fn().mockResolvedValue('{"searchQueries":["CI/CD Docker self-hosted","pipeline automation devops","continuous integration deployment"],"technologies":["Docker","Go","Python"],"intent":"devops-tool","minStars":50,"preferredLicense":"mit","requireRecentActivity":true}'),
   };
 }
 

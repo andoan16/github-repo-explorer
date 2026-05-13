@@ -53,7 +53,8 @@ describe('Error handling', () => {
       'llama3.2',
     );
     const criteria = await qg.extractCriteria('test');
-    expect(criteria.keywords).toEqual(['test']);
+    expect(criteria.keywords).toHaveLength(3);
+    expect(criteria.keywords[0]).toBe('test');
     expect(criteria.technologies).toEqual([]);
     expect(criteria.intent).toBe('other');
   });

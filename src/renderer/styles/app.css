@@ -136,6 +136,18 @@ body {
   gap: 12px; flex-wrap: wrap;
 }
 .results-toolbar { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.refinement-bar {
+  display: flex; gap: 8px; padding: 8px 12px;
+  background: var(--accent-subtle); border: 1px solid var(--accent);
+  border-radius: var(--radius); margin-bottom: 12px; align-items: center;
+}
+.refinement-bar input {
+  flex: 1; padding: 6px 10px; font-size: 13px; font-family: var(--font);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); outline: none;
+}
+.refinement-bar input:focus { border-color: var(--accent); }
+.refinement-bar input::placeholder { color: var(--text-placeholder); font-size: 12px; }
 .results-grid { display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 
 .result-card {
@@ -278,6 +290,7 @@ body {
   margin-bottom: 12px;
 }
 .match-text { font-size: 13px; color: var(--text); margin-bottom: 10px; line-height: 1.5; }
+.match-loading { color: var(--text-muted); font-style: italic; }
 .score-breakdown { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .score-bar-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .score-bar-label { width: 60px; color: var(--text-secondary); text-align: right; font-weight: 500; }

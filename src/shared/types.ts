@@ -33,6 +33,7 @@ export interface GitHubSearchResult {
   readme: string | null;
   score: RelevanceScore;
   matchExplanation: string;
+  requestContext?: string;
 }
 
 // ── Search ──
@@ -44,6 +45,7 @@ export interface SearchCriteria {
   minStars: number;
   preferredLicense: string | null;
   requireRecentActivity: boolean;
+  weightEmphasis?: WeightEmphasis;
 }
 
 export interface SearchParams {
@@ -59,6 +61,15 @@ export interface SearchParams {
 // ── Ranking ──
 export interface RelevanceScore {
   total: number;
+  semanticMatch: number;
+  starsScore: number;
+  activityScore: number;
+  readmeRelevance: number;
+  languageMatch: number;
+  licenseCompatibility: number;
+}
+
+export interface WeightEmphasis {
   semanticMatch: number;
   starsScore: number;
   activityScore: number;
@@ -110,6 +121,8 @@ export const IPC = {
   BOOKMARKS_ADD: 'bookmarks:add',
   BOOKMARKS_REMOVE: 'bookmarks:remove',
   CLONE_REPO: 'clone:repo',
+  SEARCH_REFINE: 'search:refine',
+  GENERATE_EXPLANATION: 'explanation:generate',
 } as const;
 
 // ── IPC response wrappers ──

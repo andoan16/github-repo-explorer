@@ -17,7 +17,7 @@ const defaultFilters: SearchFilters = { language: null, license: null, minStars:
 export default function App() {
   const { settings, saveSettings } = useSettings();
   const { status: ollamaStatus, check: checkOllama, refreshModels } = useOllama();
-  const { searching, hasSearched, results, totalSearched, error, selectedResult, setSelectedResult, execute, clear } = useSearch();
+  const { searching, hasSearched, results, totalSearched, error, selectedResult, setSelectedResult, execute, refine, clear } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
   const [filters, setFilters] = useState<SearchFilters>(defaultFilters);
@@ -162,6 +162,32 @@ export default function App() {
                   </button>
                 )}
               </div>
+            </div>
+            <div className="refinement-bar">
+              <input
+                type="text"
+                placeholder="Refine results, e.g. 'more DevOps focused' or 'less enterprise, prefer Go'..."
+                disabled={searching}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                    refine(e.currentTarget.value.trim());
+                    e.currentTarget.value = '';
+                  }
+                }}
+              />
+              <button
+                className="btn-secondary"
+                disabled={searching}
+                onClick={(e) => {
+                  const input = (e.currentTarget as HTMLButtonElement).previousElementSibling as HTMLInputElement;
+                  if (input.value.trim()) {
+                    refine(input.value.trim());
+                    input.value = '';
+                  }
+                }}
+              >
+                Refine
+              </button>
             </div>
             <div className="results-grid">
               {results.map((r, i) => (
