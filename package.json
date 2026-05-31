@@ -1,6 +1,6 @@
 {
   "name": "repo-explorer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Discover GitHub repositories using natural language descriptions via local LLM",
   "author": "Repo Explorer Team",
   "license": "MIT",
