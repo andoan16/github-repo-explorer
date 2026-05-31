@@ -12,6 +12,7 @@ import { BookmarkStore } from './bookmarks/store';
 import { IPC, type GitHubRepo, type GitHubSearchResult, type SearchCriteria, type SearchTimings } from '../shared/types';
 import { boundedAllSettled } from './utils/concurrency';
 import { createPerformanceTracker } from './search/perf';
+import { VietnameseQueryExpander, VietnameseTranslationCache, translationCache, detectVietnamese } from './search/vietnamese';
 
 const settings = new SettingsStore();
 const bookmarks = new BookmarkStore();
@@ -393,6 +394,34 @@ export function registerIpcHandlers(): void {
         criteria = criteriaResult.value;
         // Cache criteria for future identical queries
         criteriaCache.set(userRequest, criteria);
+      }
+
+      // ── Vietnamese multilingual expansion ──
+      // If the query is Vietnamese, expand search with translated variants
+      if (detectVietnamese(userRequest) >= 0.3 && !criteria.englishTranslation) {
+        try {
+          const expander = new VietnameseQueryExpander(ollama, cfg.ollamaModel);
+          const expansion = await expander.expand(userRequest, ac.signal, translationCache);
+          if (expansion) {
+            // Merge expansion into criteria
+            criteria = {
+              ...criteria,
+              englishTranslation: expansion.englishTranslation ?? criteria.englishTranslation,
+              originalQuery: expansion.originalQuery ?? criteria.originalQuery,
+              technicalConcepts: [
+                ...(criteria.technicalConcepts ?? []),
+                ...expansion.technicalConcepts,
+              ].filter((v, i, a) => a.indexOf(v) === i), // deduplicate
+              // Include expanded search variants as additional keywords
+              keywords: [
+                ...criteria.keywords,
+                ...expansion.searchVariants.filter(v => !criteria.keywords.includes(v)),
+              ].slice(0, 6), // cap at 6 keywords
+            };
+          }
+        } catch {
+          // Vietnamese expansion is best-effort; don't fail the search
+        }
       }
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };

@@ -2,6 +2,7 @@ import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/
 import type { OllamaClient } from '../ollama/client';
 import type { GitHubRepo } from '../../shared/types';
 import { computeResultStatistics, mineNegativeSpace } from './result-stats';
+import { detectVietnamese } from './vietnamese';
 
 const INTENT_ANGLES: Record<string, string> = {
   'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
@@ -21,11 +22,17 @@ export class QueryGenerator {
   constructor(private ollama: OllamaClient, private model: string) {}
 
   async extractCriteria(userDescription: string, signal?: AbortSignal): Promise<SearchCriteria> {
-    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.
+    const isVietnamese = detectVietnamese(userDescription) >= 0.3;
+
+    const multilingualInstruction = isVietnamese
+      ? `\n\nIMPORTANT: The user's request is in Vietnamese. You MUST:\n1. Translate the request to English for the searchQueries\n2. Also include one query that preserves key Vietnamese technical terms (for repos that might use Vietnamese in their metadata)\n3. Extract ALL technical concepts, frameworks, programming languages, deployment preferences, and infrastructure requirements — even if they are expressed in Vietnamese\n4. Map Vietnamese terms to their English equivalents: e.g., "giám sát" → monitoring, "máy chủ" → server, "quản lý mật khẩu" → password manager, "tự host" → self-hosted, "mã nguồn mở" → open source, "giấy phép" → license, etc.\n5. The searchQueries should be in ENGLISH (GitHub API works best with English keywords)\n6. Include translated technical synonyms and alternative terminology in a separate field`
+      : '';
+
+    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${multilingualInstruction}
 
 User request: "${userDescription}"
 
-Generate 3 alternative GitHub keyword queries (each 2-4 words), approaching the request from different angles (synonyms, broader/narrower scope, different technology emphasis).
+Generate 3 alternative GitHub keyword queries (each 2-4 words), approaching the request from different angles (synonyms, broader/narrower scope, different technology emphasis).${isVietnamese ? ' At least one query should use purely English technical terms translated from the Vietnamese input.' : ''}
 
 Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
@@ -35,7 +42,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
   "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | other",
   "minStars": number (0-5000, default 0),
   "preferredLicense": "mit" | "apache-2.0" | "gpl-3.0" | "bsd-3-clause" | "mpl-2.0" | null,
-  "requireRecentActivity": boolean
+  "requireRecentActivity": boolean${isVietnamese ? ',\n  "englishTranslation": "English translation of the user\'s request",\n  "technicalConcepts": ["extracted technical concepts in English, e.g., ci-cd, monitoring, password-manager, self-hosted"]' : ''}
 }
 
 JSON:`;
@@ -50,6 +57,8 @@ JSON:`;
       minStars?: number;
       preferredLicense?: string | null;
       requireRecentActivity?: boolean;
+      englishTranslation?: string;
+      technicalConcepts?: string[];
     }>(raw);
 
     // Build keywords from searchQueries array (new format), fall back to legacy searchQuery/keywords
@@ -71,6 +80,19 @@ JSON:`;
       queries.push(words.slice(start, start + 3).join(' '));
     }
 
+    // Extract multilingual fields
+    const englishTranslation = criteria.englishTranslation ?? undefined;
+    const technicalConcepts = criteria.technicalConcepts ?? [];
+    const expandedKeywords: string[] = [];
+
+    // If Vietnamese was detected, build expanded keywords from translation + concepts
+    if (isVietnamese && englishTranslation) {
+      expandedKeywords.push(englishTranslation);
+    }
+    if (technicalConcepts.length > 0) {
+      expandedKeywords.push(...technicalConcepts.slice(0, 5));
+    }
+
     return {
       keywords: queries.slice(0, 3),
       technologies: criteria.technologies ?? [],
@@ -79,6 +101,12 @@ JSON:`;
       minStars: typeof criteria.minStars === 'number' ? criteria.minStars : 0,
       preferredLicense: criteria.preferredLicense ?? null,
       requireRecentActivity: criteria.requireRecentActivity ?? false,
+      ...(isVietnamese ? {
+        expandedKeywords: expandedKeywords.length > 0 ? expandedKeywords : undefined,
+        originalQuery: userDescription,
+        englishTranslation: englishTranslation,
+        technicalConcepts: technicalConcepts.length > 0 ? technicalConcepts : undefined,
+      } : {}),
     };
   }
 
@@ -96,15 +124,42 @@ JSON:`;
   }
 
   buildSearchParamsArray(criteria: SearchCriteria, filters?: { language?: string | null; license?: string | null; minStars?: number }): SearchParams[] {
-    return criteria.keywords.map((keyword) => ({
+    const baseParams = criteria.keywords.map((keyword) => ({
       query: keyword,
       language: filters?.language ?? undefined,
       minStars: filters?.minStars ?? criteria.minStars,
       license: filters?.license ?? criteria.preferredLicense ?? undefined,
-      sort: 'stars',
-      order: 'desc',
+      sort: 'stars' as const,
+      order: 'desc' as const,
       perPage: 30,
     }));
+
+    // Add expanded keyword variants (from multilingual translation)
+    // These are additional search queries for broader coverage
+    if (criteria.expandedKeywords && criteria.expandedKeywords.length > 0) {
+      for (const expanded of criteria.expandedKeywords) {
+        // Only add if not too similar to existing queries
+        const normalizedExpanded = expanded.toLowerCase().replace(/[^\w\s]/g, '').trim();
+        const isDuplicate = baseParams.some((p) => {
+          const normalizedExisting = p.query.toLowerCase().replace(/[^\w\s]/g, '').trim();
+          return normalizedExisting === normalizedExpanded ||
+            levenshteinSimilarity(normalizedExisting, normalizedExpanded) > 0.7;
+        });
+        if (!isDuplicate) {
+          baseParams.push({
+            query: expanded,
+            language: filters?.language ?? undefined,
+            minStars: filters?.minStars ?? criteria.minStars,
+            license: filters?.license ?? criteria.preferredLicense ?? undefined,
+            sort: 'stars' as const,
+            order: 'desc' as const,
+            perPage: 30,
+          });
+        }
+      }
+    }
+
+    return baseParams;
   }
 
   async generateRefinementSuggestions(
@@ -318,4 +373,31 @@ JSON:`;
       throw new Error(`Failed to parse LLM output as JSON. Raw: ${raw.slice(0, 200)}`);
     }
   }
+}
+
+/**
+ * Computes a similarity ratio (0-1) between two strings using
+ * a simplified Levenshtein distance.
+ */
+function levenshteinSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
+
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      const cost = b[i - 1] === a[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  const maxLen = Math.max(a.length, b.length);
+  return 1 - matrix[b.length][a.length] / maxLen;
 }

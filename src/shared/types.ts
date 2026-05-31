@@ -46,6 +46,14 @@ export interface SearchCriteria {
   preferredLicense: string | null;
   requireRecentActivity: boolean;
   weightEmphasis?: WeightEmphasis;
+  /** Multilingual expansion: additional query variants generated from translation */
+  expandedKeywords?: string[];
+  /** Original user query if it was detected as Vietnamese */
+  originalQuery?: string;
+  /** English translation of the user query (if Vietnamese was detected) */
+  englishTranslation?: string;
+  /** Extracted technical concepts from multilingual analysis */
+  technicalConcepts?: string[];
 }
 
 export interface SearchParams {

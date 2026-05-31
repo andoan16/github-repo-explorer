@@ -207,7 +207,7 @@ export default function App() {
             <div className="refinement-bar">
               <input
                 type="text"
-                placeholder="Refine results, e.g. 'more DevOps focused' or 'less enterprise, prefer Go'..."
+                placeholder="Refine results, e.g. 'more DevOps focused' or 'ưu tiên Go', 'ít Kubernetes hơn'..."
                 disabled={searching}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && e.currentTarget.value.trim()) {

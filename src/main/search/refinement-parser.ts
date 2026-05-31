@@ -1,4 +1,5 @@
 import type { WeightEmphasis } from '../../shared/types';
+import { detectVietnamese, detectVietnameseRefinement } from './vietnamese';
 
 /**
  * Detects deterministic refinement patterns and converts them to weight-emphasis
@@ -27,6 +28,14 @@ const OPEN_SOURCE_LICENSES = new Set([
 export class RefinementParser {
   detect(refinementText: string): DetectedRefinement | null {
     const lower = refinementText.toLowerCase().trim();
+
+    // ── Vietnamese refinement patterns (check first for Vietnamese input) ──
+    if (detectVietnamese(refinementText) >= 0.3) {
+      const viRefinement = detectVietnameseRefinement(refinementText);
+      if (viRefinement) return viRefinement;
+      // If Vietnamese was detected but no local pattern matched, fall through
+      // to LLM for translation-based handling
+    }
 
     // ── Star-based sorting ──
     if (this.isStarsSort(lower)) {

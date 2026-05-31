@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 
 interface Props {
   onSearch: (query: string) => void;
@@ -6,8 +6,15 @@ interface Props {
   disabled: boolean;
 }
 
+const SEARCH_PLACEHOLDERS = [
+  'Describe what you need, e.g. "I need a self-hosted CI/CD tool with Docker support"...',
+  'Mô tả nhu cầu, ví dụ "tôi muốn nền tảng CI/CD tự host hỗ trợ Docker"...',
+  'Ví dụ: "quản lý mật khẩu", "giám sát máy chủ", "công cụ backup cơ sở dữ liệu"...',
+];
+
 export default function SearchBar({ onSearch, searching, disabled }: Props) {
   const [value, setValue] = useState('');
+  const placeholderIdx = useMemo(() => Math.floor(Math.random() * SEARCH_PLACEHOLDERS.length), []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,7 +23,7 @@ export default function SearchBar({ onSearch, searching, disabled }: Props) {
 
   const placeholder = disabled
     ? 'Configure Ollama and GitHub token in Settings first...'
-    : 'Describe what you need, e.g. "I need a self-hosted CI/CD tool with Docker support"...';
+    : SEARCH_PLACEHOLDERS[placeholderIdx];
 
   return (
     <form className="search-bar" onSubmit={handleSubmit}>

@@ -37,7 +37,10 @@ export class RankingEngine {
     const activityScore = this.activitySignal(repo.updated_at);
     const languageMatch = this.matchLanguage(repo.language, criteria.technologies);
     const licenseCompatibility = this.matchLicense(repo.license?.key ?? null, criteria.preferredLicense);
-    const readmeRelevance = this.readmeSignal(readme, tokens);
+    // Use multilingual README signal when criteria has translation fields
+    const readmeRelevance = (criteria.englishTranslation || criteria.technicalConcepts?.length)
+      ? this.readmeSignalMultilingual(readme, tokens, criteria)
+      : this.readmeSignal(readme, tokens);
     let semanticMatch = this.baseSemanticScore(repo, criteria, tokens);
 
     // Credibility penalty: repos with fewer than 100 stars get their semantic
@@ -181,6 +184,31 @@ export class RankingEngine {
     return Math.min(1, hits / tokens.length);
   }
 
+  /**
+   * Compute README signal with multilingual expansion.
+   * Same as readmeSignal but also checks translated tokens.
+   */
+  readmeSignalMultilingual(readme: string | null, tokens: string[], criteria: SearchCriteria): number {
+    if (!readme || tokens.length === 0) return 0.5;
+    const text = readme.toLowerCase();
+    let hits = 0;
+    const allTokens = [...tokens];
+
+    // Add English translation tokens
+    if (criteria.englishTranslation) {
+      allTokens.push(...this.tokenize([criteria.englishTranslation]));
+    }
+    if (criteria.technicalConcepts) {
+      allTokens.push(...criteria.technicalConcepts.map(c => c.toLowerCase()));
+    }
+
+    const uniqueTokens = [...new Set(allTokens)];
+    for (const t of uniqueTokens) {
+      if (text.includes(t)) hits++;
+    }
+    return Math.min(1, hits / uniqueTokens.length);
+  }
+
   private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[]): number {
     let score = 0.3;
     const desc = (repo.description ?? '').toLowerCase();
@@ -204,6 +232,31 @@ export class RankingEngine {
     for (const tech of criteria.technologies) {
       const t = tech.toLowerCase();
       if (desc.includes(t) || topics.includes(t)) score += 0.08;
+    }
+
+    // ── Cross-language semantic matching ──
+    // When the user searched in Vietnamese, English translations and
+    // technical concepts should also boost the score if they appear in
+    // repo metadata. This ensures repos with English descriptions
+    // aren't penalized when the user searched in Vietnamese.
+    if (criteria.englishTranslation) {
+      const translationTokens = this.tokenize([criteria.englishTranslation]);
+      for (const token of translationTokens) {
+        if (fullName.includes(token)) score += 0.10;
+        if (desc.includes(token)) score += 0.07;
+        if (topics.some((t) => t.includes(token))) score += 0.05;
+      }
+      // Also check the full translation as a phrase
+      const englishLower = criteria.englishTranslation.toLowerCase();
+      if (englishLower.length >= 4 && desc.includes(englishLower)) score += 0.06;
+    }
+
+    if (criteria.technicalConcepts && criteria.technicalConcepts.length > 0) {
+      for (const concept of criteria.technicalConcepts) {
+        const c = concept.toLowerCase();
+        if (desc.includes(c) || topics.includes(c)) score += 0.07;
+        if (fullName.includes(c)) score += 0.10;
+      }
     }
 
     if (repo.topics.length >= 5) score += 0.04;
