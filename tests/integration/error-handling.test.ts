@@ -90,17 +90,17 @@ describe('Error handling', () => {
     await expect(mock.searchRepos({ query: 'test', sort: 'stars', order: 'desc', perPage: 10 })).rejects.toThrow('fetch failed');
   });
 
-  it('handles empty search results gracefully in ranking', () => {
+  it('handles empty search results gracefully in ranking', async () => {
     const engine = new RankingEngine();
     const criteria = {
       keywords: ['nothing'], technologies: [], intent: 'other' as const,
       useCase: 'test', minStars: 0, preferredLicense: null, requireRecentActivity: false,
     };
-    const ranked = engine.rank([], criteria, new Map(), 'test', 10);
+    const ranked = await engine.rank([], criteria, new Map(), 'test', 10);
     expect(ranked).toHaveLength(0);
   });
 
-  it('handles archived repos being filtered', () => {
+  it('handles archived repos being filtered', async () => {
     const engine = new RankingEngine();
     const repos: GitHubRepo[] = [
       makeMockRepos(1)[0],
@@ -110,7 +110,7 @@ describe('Error handling', () => {
       keywords: ['test'], technologies: [], intent: 'other' as const,
       useCase: 'test', minStars: 0, preferredLicense: null, requireRecentActivity: false,
     };
-    const ranked = engine.rank(repos, criteria, new Map(), 'test', 10);
+    const ranked = await engine.rank(repos, criteria, new Map(), 'test', 10);
     expect(ranked).toHaveLength(1);
   });
 

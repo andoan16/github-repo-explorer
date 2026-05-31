@@ -1,10 +1,26 @@
 import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/types';
 import type { OllamaClient } from '../ollama/client';
+import type { GitHubRepo } from '../../shared/types';
+import { computeResultStatistics, mineNegativeSpace } from './result-stats';
+
+const INTENT_ANGLES: Record<string, string> = {
+  'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
+  'cli-tool': 'Prioritize suggestions about cross-platform support, installation method, shell integration, and configuration format.',
+  'library': 'Prioritize suggestions about API surface, TypeScript types, bundle size, framework compatibility, and language bindings.',
+  'api': 'Prioritize suggestions about REST vs GraphQL, authentication model, rate limiting, and SDK availability.',
+  'mobile-app': 'Prioritize suggestions about cross-platform vs native, iOS/Android coverage, and offline support.',
+  'desktop-app': 'Prioritize suggestions about cross-platform support, native vs Electron, and installer packaging.',
+  'devops-tool': 'Prioritize suggestions about self-hosted vs SaaS, Docker/Kubernetes support, configuration format, and infrastructure compatibility.',
+  'ai-ml-tool': 'Prioritize suggestions about model format, training vs inference, hardware requirements, and framework integration.',
+  'database': 'Prioritize suggestions about storage model, scalability, query language, and cloud vs embedded.',
+  'networking-tool': 'Prioritize suggestions about protocol support, throughput, security features, and agent vs agentless.',
+  'security-tool': 'Prioritize suggestions about attack surface, compliance standards, integration model, and automation capability.',
+};
 
 export class QueryGenerator {
   constructor(private ollama: OllamaClient, private model: string) {}
 
-  async extractCriteria(userDescription: string): Promise<SearchCriteria> {
+  async extractCriteria(userDescription: string, signal?: AbortSignal): Promise<SearchCriteria> {
     const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.
 
 User request: "${userDescription}"
@@ -24,8 +40,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 JSON:`;
 
-
-    const raw = await this.ollama.generate(prompt, this.model);
+    const raw = await this.ollama.generate(prompt, this.model, signal);
     const criteria = this.parseJson<{
       searchQueries?: string[];
       searchQuery?: string;
@@ -92,6 +107,114 @@ JSON:`;
     }));
   }
 
+  async generateRefinementSuggestions(
+    userRequest: string,
+    keywords: string[],
+    technologies: string[],
+    intent: string,
+    resultCount: number,
+    repos: GitHubRepo[],
+    scorePercentiles?: { top: number; median: number; bottom: number; above80: number; below50: number; total: number },
+    feedbackContext?: { narrowCount: number; broadCount: number },
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const stats = computeResultStatistics(repos);
+    const negSpace = mineNegativeSpace(userRequest, repos, 10);
+
+    // ── Top results block ──
+    const topRepos = [...repos]
+      .sort((a, b) => b.stars - a.stars)
+      .slice(0, 5);
+    let topResultsBlock = '';
+    if (topRepos.length > 0) {
+      topResultsBlock = `─── TOP RESULTS BY STARS ───
+${topRepos.map((r, i) => `${i + 1}. ${r.full_name} (★${r.stars.toLocaleString()}) — ${r.description ?? 'No description'}`).join('\n')}
+───────────────────────────`;
+    }
+
+    // Score-aware context only when available
+    let scoreBlock = '';
+    let heterogeneityDirective = '';
+    if (scorePercentiles && scorePercentiles.total > 0) {
+      scoreBlock = `─── SCORE DISTRIBUTION ───
+    Top: ${scorePercentiles.top}%, Median: ${scorePercentiles.median}%, Bottom: ${scorePercentiles.bottom}% (${scorePercentiles.total} repos)
+    ───────────────────────────`;
+
+      const allLow = scorePercentiles.top < 55;
+      const allHigh = scorePercentiles.bottom >= 75 && scorePercentiles.above80 >= scorePercentiles.total * 0.7;
+      if (allLow) heterogeneityDirective = 'CRITICAL: Poor match. Suggest broader alternatives. Do NOT narrow.';
+      else if (allHigh) heterogeneityDirective = 'Strong matches. Suggest lateral exploration.';
+    }
+
+    // ── Cardinality-gated directive (with feedback loop) ──
+    let directionHint = '';
+    if (resultCount < 5) {
+      directionHint = 'IMPORTANT: Only 5 or fewer results found. DO NOT suggest narrowing filters (language, license, or star threshold). Only suggest lateral exploration or broader searches.';
+    } else if (resultCount > 30) {
+      directionHint = 'IMPORTANT: 30+ results found. Prioritize narrowing suggestions: language, license, star threshold, recency.';
+    }
+
+    // Feedback loop: if user has been narrowing repeatedly, bias further narrowing
+    if (feedbackContext) {
+      if (feedbackContext.narrowCount >= 2 && feedbackContext.narrowCount > feedbackContext.broadCount) {
+        directionHint += ' USER PATTERN: User has narrowed several times and keeps going — they want precision. Prioritize even more specific narrowing suggestions.';
+      } else if (feedbackContext.broadCount >= 2 && feedbackContext.broadCount > feedbackContext.narrowCount) {
+        directionHint += ' USER PATTERN: User keeps broadening — they want discovery. Prioritize lateral exploration and broader suggestions.';
+      }
+    }
+
+    // ── Negative-space warning ──
+    let negSpaceBlock = '';
+    if (negSpace.gaps.length > 0) {
+      negSpaceBlock = `─── NEGATIVE SPACE: MISSING FROM TOP RESULTS ───
+These keywords from the user's query are underrepresented in the current results:
+${negSpace.summary}
+
+CRITICAL: The user asked for these qualities but the results don't match well. Prioritize suggestions that address this gap — try broader terms, different angles, or acknowledge that the search intent may not align with what GitHub has. Do NOT suggest narrowing by language or license if the primary issue is a mismatch between the query and the results.
+─────────────────────────────────────────`;
+    }
+
+    const prompt = `You are a GitHub search expert. A user searched GitHub and received ${resultCount} results. Suggest 3-6 natural-language refinement phrases they could use to narrow or refocus their results.
+
+Original search: "${userRequest}"
+Keywords used: ${keywords.join(', ')}
+Technologies: ${technologies.join(', ')}
+Intent: ${intent}
+${INTENT_ANGLES[intent] ? `Intent guidance: ${INTENT_ANGLES[intent]}` : ''}
+
+─── RESULT SET STATISTICS ───
+Language distribution: ${stats.languageDistribution}
+License distribution: ${stats.licenseDistribution}
+Star distribution: ${stats.starRange}
+Top topics: ${stats.topTopics}
+─────────────────────────────
+
+${topResultsBlock}
+
+${scoreBlock}
+
+${negSpaceBlock}
+
+${heterogeneityDirective}
+
+${directionHint}
+
+Each suggestion should be a short phrase like "only ${stats.languageDistribution.split(',')[0]?.split(' ')[0] ?? 'Go'} projects" or "only MIT-licensed" or "remove unlicensed repos" or "filter to active projects (recently updated)". Make them diverse — different angles (license, language, scope, complexity, use-case). Reference the statistics above when possible so every suggestion is grounded in real data.
+
+Return ONLY valid JSON — no markdown, no code fences, no commentary:
+["suggestion 1", "suggestion 2", "suggestion 3"]
+
+JSON:`;
+
+    const raw = await this.ollama.generate(prompt, this.model, signal);
+    try {
+      const suggestions = this.parseJson<string[]>(raw);
+      return Array.isArray(suggestions) ? suggestions.slice(0, 6) : [];
+    } catch {
+      return [];
+    }
+  }
+
   async generateMatchExplanation(repoName: string, repoDescription: string | null, userRequest: string): Promise<string> {
     const prompt = `A user searched for repositories and received this result. Explain in 1-2 sentences why this repository matches the user's request. Be specific and concise.
 
@@ -110,6 +233,7 @@ Explanation:`;
     originalCriteria: SearchCriteria,
     refinementText: string,
     originalRequest: string,
+    signal?: AbortSignal,
   ): Promise<SearchCriteria> {
     const prompt = `You are a GitHub search expert. A user searched for repositories and wants to refine the results.
 
@@ -150,7 +274,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 JSON:`;
 
-    const raw = await this.ollama.generate(prompt, this.model);
+    const raw = await this.ollama.generate(prompt, this.model, signal);
     const parsed = this.parseJson<{
       keywords?: string[];
       technologies?: string[];

@@ -46,6 +46,12 @@ The app window opens automatically. Configure your GitHub token and Ollama URL i
 - **Iterative refinement** — Refine results inline (e.g. "more DevOps focused", "prefer Go") to re-rank cached repos without re-hitting GitHub
 - **Lazy explanations** — Match explanations generated on demand when viewing repo details, keeping search fast
 - **Weighted ranking** — 6-signal relevance scoring with adjustable emphasis per refinement
+- **Bookmarks** — Save repositories to a persistent bookmark list for later reference; view, revisit, or remove saved repos anytime
+- **Repo comparison** — Select two or more repos and compare them side-by-side across stars, forks, language, license, topics, and match explanation
+- **One-click clone** — Clone any repository to your local machine directly from the app, with a file-picker dialog to choose the destination
+- **Copy clone command** — Copy the full `git clone` command to clipboard for any repository
+- **Find similar** — Use any result as a seed to search for similar repositories
+- **Theme support** — Choose between light, dark, or system-following theme in Settings
 
 ## How It Works
 
@@ -69,8 +75,9 @@ The app window opens automatically. Configure your GitHub token and Ollama URL i
 | `npm run dev` | Start dev mode (hot-reload renderer, restart on main changes) |
 | `npm run build` | Build renderer + main process for production |
 | `npm run test` | Run unit tests |
+| `npm run test:watch` | Unit tests in watch mode |
 | `npm run test:integration` | Run integration tests (uses mocks by default) |
-| `npm run test:all` | Run all tests |
+| `npm run test:all` | Run all tests (unit + integration) |
 | `npm run package:win` | Package as Windows NSIS installer → `release/` |
 | `npm run package:mac` | Package as macOS DMG → `release/` |
 | `npm run package:all` | Package for both platforms |
@@ -142,6 +149,7 @@ repo-explorer/
 │   │   └── settings/store.ts    # JSON settings persistence
 │   ├── renderer/                # React frontend
 │   │   ├── App.tsx              # Root component
+│   │   ├── main.tsx             # React entry point
 │   │   ├── components/          # UI components
 │   │   │   ├── SearchBar.tsx    # Natural-language input
 │   │   │   ├── ResultCard.tsx   # Repository result card
@@ -149,28 +157,35 @@ repo-explorer/
 │   │   │   ├── Settings.tsx     # Settings panel
 │   │   │   ├── StatusBar.tsx    # Connection status
 │   │   │   ├── Filters.tsx      # Language/license/stars filters
-│   │   │   └── MatchExplanation.tsx  # Score breakdown visualization
+│   │   │   ├── MatchExplanation.tsx  # Score breakdown visualization
+│   │   │   ├── BookmarkButton.tsx    # Toggle bookmark on a result
+│   │   │   ├── BookmarksPanel.tsx    # Bookmark list & management
+│   │   │   ├── CloneButton.tsx       # Clone repo to local machine
+│   │   │   ├── CopyButton.tsx        # Copy git clone command
+│   │   │   └── ComparisonView.tsx    # Side-by-side repo comparison
 │   │   ├── hooks/               # React hooks
 │   │   │   ├── useSettings.ts
 │   │   │   ├── useOllama.ts
-│   │   │   └── useSearch.ts
-│   │   └── styles/app.css       # Dark theme stylesheet
+│   │   │   ├── useSearch.ts
+│   │   │   └── useBookmarks.ts
+│   │   ├── types/index.ts       # Renderer-side type declarations
+│   │   └── styles/app.css       # Theme stylesheet
 │   ├── preload/index.ts         # Context bridge (secure IPC)
 │   └── shared/types.ts          # Shared TypeScript types & IPC channel defs
 ├── tests/
 │   ├── mocks/                   # Test doubles
 │   │   ├── ollama.ts
 │   │   └── github.ts
-│   ├── unit/
-│   │   ├── ranking.test.ts      # Ranking engine (9 cases incl. emphasis)
+│   ├── unit/                    # 22 test cases total
+│   │   ├── ranking.test.ts      # Ranking engine (9 cases)
 │   │   ├── query-gen.test.ts    # Query extraction & search params (8 cases)
-│   │   └── bookmarks.test.ts    # Bookmark store logic
-│   └── integration/
-│       ├── ollama.test.ts       # Ollama connection + generation tests
-│       ├── github.test.ts       # GitHub auth + search + README tests
-│       ├── query-gen.test.ts    # Query extraction + param building
-│       ├── e2e.test.ts          # Full pipeline + multi-query + refinement
-│       └── error-handling.test.ts  # 13 error cases
+│   │   └── bookmarks.test.ts    # Bookmark store logic (5 cases)
+│   └── integration/             # 46 test cases total
+│       ├── ollama.test.ts       # Ollama connection + generation (5 cases)
+│       ├── github.test.ts       # GitHub auth + search + README (7 cases)
+│       ├── query-gen.test.ts    # Query extraction + param building (9 cases)
+│       ├── e2e.test.ts          # Full pipeline + multi-query + refinement (12 cases)
+│       └── error-handling.test.ts  # Error scenarios (13 cases)
 ├── scripts/
 │   └── build-main.mjs           # esbuild config for main + preload
 ├── package.json                 # Dependencies, scripts, electron-builder config
@@ -215,5 +230,4 @@ The app handles these failure modes:
 - **History**: Save and revisit past searches
 - **Offline mode**: Search previously fetched results without network
 - **Model download UI**: Pull Ollama models from within the app
-- **Dark/light theme toggle**: Full theme switching (dark theme is default)
 - **Repository insights**: Show commit frequency, contributor count, release cadence

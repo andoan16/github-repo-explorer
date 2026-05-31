@@ -40,7 +40,7 @@ describe('End-to-end search flow', () => {
     }
 
     // Step 4: Rank (no explanations generated upfront)
-    const ranked = ranking.rank(repos, criteria, readmes, 'CI/CD with Docker', 10);
+    const ranked = await ranking.rank(repos, criteria, readmes, 'CI/CD with Docker', 10);
     expect(ranked.length).toBeGreaterThan(0);
     expect(ranked[0].score.total).toBeGreaterThan(0);
 
@@ -111,7 +111,7 @@ describe('End-to-end search flow', () => {
     const { repos } = await githubMock.searchRepos(params);
     expect(repos.length).toBeGreaterThan(0);
 
-    const ranked = ranking.rank(repos, criteria, new Map(), 'UI components', 10);
+    const ranked = await ranking.rank(repos, criteria, new Map(), 'UI components', 10);
     expect(ranked.length).toBeGreaterThan(0);
     expect(ranked[0].repo.language).toBe('Go'); // mock always returns Go
   });
@@ -250,7 +250,7 @@ describe('End-to-end search flow', () => {
       }
     }
 
-    const reRanked = ranking.rank(repos, refined, readmes, 'CI/CD tool', 10, refined.weightEmphasis);
+    const reRanked = await ranking.rank(repos, refined, readmes, 'CI/CD tool', 10, refined.weightEmphasis);
     expect(reRanked.length).toBeGreaterThan(0);
 
     // searchRepos should NOT have been called again
@@ -306,7 +306,7 @@ describe('End-to-end search flow', () => {
       readmes.set(repo.id, await github.getReadme(owner, name, repo.default_branch));
     }));
 
-    const ranked = ranking.rank(repos, criteria, readmes, 'markdown editor with live preview', 5);
+    const ranked = await ranking.rank(repos, criteria, readmes, 'markdown editor with live preview', 5);
     expect(ranked.length).toBeGreaterThan(0);
     expect(ranked[0].score.total).toBeGreaterThan(0);
   }, 120000);

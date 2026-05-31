@@ -15,6 +15,13 @@ const api = {
   refine: (refinementText: string) => ipcRenderer.invoke(IPC.SEARCH_REFINE, refinementText),
   generateExplanation: (repoName: string, repoDescription: string | null, requestContext: string) =>
     ipcRenderer.invoke(IPC.GENERATE_EXPLANATION, { repoName, repoDescription, requestContext }),
+  onSuggestionsUpdate: (callback: (suggestions: string[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { suggestions: string[] }) => {
+      callback(data.suggestions);
+    };
+    ipcRenderer.on(IPC.SUGGESTIONS_UPDATE, handler);
+    return () => { ipcRenderer.removeListener(IPC.SUGGESTIONS_UPDATE, handler); };
+  },
 };
 
 contextBridge.exposeInMainWorld('repoExplorer', api);

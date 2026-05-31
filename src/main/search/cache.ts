@@ -1,0 +1,177 @@
+import type { GitHubRepo, SearchCriteria } from '../../shared/types';
+
+interface CacheEntry {
+  repos: GitHubRepo[];
+  totalCount: number;
+  timestamp: number;
+  readmes?: Map<number, string | null>;
+}
+
+/** Metrics tracking for cache performance. */
+export interface CacheMetrics {
+  hits: number;
+  misses: number;
+  evictions: number;
+  size: number;
+  maxSize: number;
+}
+
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_CACHE_SIZE = 50;
+
+/**
+ * Simple TTL + LRU cache for GitHub search results.
+ * Avoids redundant API calls when the same query is made within a short window.
+ * Tracks hit/miss metrics for performance monitoring.
+ */
+class SearchCache {
+  private cache = new Map<string, CacheEntry>();
+  private _hits = 0;
+  private _misses = 0;
+  private _evictions = 0;
+
+  get(key: string): CacheEntry | null {
+    const entry = this.cache.get(key);
+    if (!entry) {
+      this._misses++;
+      return null;
+    }
+
+    // TTL check
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+      this.cache.delete(key);
+      this._evictions++;
+      this._misses++;
+      return null;
+    }
+
+    // LRU: move to end (most recently used)
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    this._hits++;
+    return entry;
+  }
+
+  set(key: string, repos: GitHubRepo[], totalCount: number): void {
+    // Evict oldest entry if at capacity
+    if (this.cache.size >= MAX_CACHE_SIZE) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest) {
+        this.cache.delete(oldest);
+        this._evictions++;
+      }
+    }
+
+    this.cache.set(key, {
+      repos,
+      totalCount,
+      timestamp: Date.now(),
+    });
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+
+  /** Return current cache performance metrics and reset counters. */
+  getMetrics(): CacheMetrics {
+    return {
+      hits: this._hits,
+      misses: this._misses,
+      evictions: this._evictions,
+      size: this.cache.size,
+      maxSize: MAX_CACHE_SIZE,
+    };
+  }
+
+  /** Reset counters (not the cache itself). */
+  resetMetrics(): void {
+    this._hits = 0;
+    this._misses = 0;
+    this._evictions = 0;
+  }
+}
+
+/** Normalize and serialize search params into a deterministic cache key. */
+export function buildSearchCacheKey(params: {
+  query: string;
+  language?: string;
+  license?: string;
+  minStars?: number;
+  sort?: string;
+  order?: string;
+  perPage?: number;
+}): string {
+  // Normalize query: trim + lowercase + collapse whitespace
+  const normalizedQuery = params.query
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  return [
+    normalizedQuery,
+    params.language ?? '_',
+    params.license ?? '_',
+    params.minStars ?? 0,
+    params.sort ?? 'stars',
+    params.order ?? 'desc',
+    params.perPage ?? 30,
+  ].join('|');
+}
+
+export const searchCache = new SearchCache();
+
+// ── Criteria cache: avoid repeated Ollama calls for identical queries ──
+
+interface CriteriaCacheEntry {
+  criteria: SearchCriteria;
+  timestamp: number;
+}
+
+const CRITERIA_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_CRITERIA_CACHE_SIZE = 100;
+
+class CriteriaCache {
+  private cache = new Map<string, CriteriaCacheEntry>();
+  private _hits = 0;
+  private _misses = 0;
+
+  /** Normalize a user request into a cache key (lowercase, collapsed whitespace). */
+  static key(userRequest: string): string {
+    return userRequest.toLowerCase().trim().replace(/\s+/g, ' ');
+  }
+
+  get(userRequest: string): SearchCriteria | null {
+    const key = CriteriaCache.key(userRequest);
+    const entry = this.cache.get(key);
+    if (!entry) {
+      this._misses++;
+      return null;
+    }
+    if (Date.now() - entry.timestamp > CRITERIA_CACHE_TTL_MS) {
+      this.cache.delete(key);
+      this._misses++;
+      return null;
+    }
+    // LRU touch
+    this.cache.delete(key);
+    this.cache.set(key, entry);
+    this._hits++;
+    return entry.criteria;
+  }
+
+  set(userRequest: string, criteria: SearchCriteria): void {
+    const key = CriteriaCache.key(userRequest);
+    if (this.cache.size >= MAX_CRITERIA_CACHE_SIZE) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest) this.cache.delete(oldest);
+    }
+    this.cache.set(key, { criteria, timestamp: Date.now() });
+  }
+
+  getMetrics(): { hits: number; misses: number; size: number } {
+    return { hits: this._hits, misses: this._misses, size: this.cache.size };
+  }
+}
+
+export const criteriaCache = new CriteriaCache();

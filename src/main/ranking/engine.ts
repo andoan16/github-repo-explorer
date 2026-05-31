@@ -1,42 +1,55 @@
 import type { GitHubRepo, RelevanceScore, WeightEmphasis } from '../../shared/types';
 import type { SearchCriteria } from '../../shared/types';
 
+/** Precomputed default weights — avoids per-repo allocation on every score call. */
+const DEFAULT_WEIGHTS: Required<WeightEmphasis> = {
+  semanticMatch: 0.30,
+  starsScore: 0.20,
+  activityScore: 0.15,
+  readmeRelevance: 0.15,
+  languageMatch: 0.10,
+  licenseCompatibility: 0.10,
+};
+
+function computeNormalized(emphasis: WeightEmphasis): Required<WeightEmphasis> {
+  const w = {
+    semanticMatch: DEFAULT_WEIGHTS.semanticMatch * emphasis.semanticMatch,
+    starsScore: DEFAULT_WEIGHTS.starsScore * emphasis.starsScore,
+    activityScore: DEFAULT_WEIGHTS.activityScore * emphasis.activityScore,
+    readmeRelevance: DEFAULT_WEIGHTS.readmeRelevance * emphasis.readmeRelevance,
+    languageMatch: DEFAULT_WEIGHTS.languageMatch * emphasis.languageMatch,
+    licenseCompatibility: DEFAULT_WEIGHTS.licenseCompatibility * emphasis.licenseCompatibility,
+  };
+  const sum = w.semanticMatch + w.starsScore + w.activityScore + w.readmeRelevance + w.languageMatch + w.licenseCompatibility;
+  w.semanticMatch /= sum;
+  w.starsScore /= sum;
+  w.activityScore /= sum;
+  w.readmeRelevance /= sum;
+  w.languageMatch /= sum;
+  w.licenseCompatibility /= sum;
+  return w;
+}
+
 export class RankingEngine {
-  scoreRepo(repo: GitHubRepo, criteria: SearchCriteria, readme: string | null, userRequest: string, emphasis?: WeightEmphasis): RelevanceScore {
+  scoreRepo(repo: GitHubRepo, criteria: SearchCriteria, readme: string | null, userRequest: string, emphasis?: WeightEmphasis, preTokens?: string[]): RelevanceScore {
+    const tokens = preTokens ?? this.tokenize(criteria.keywords);
     const starsScore = this.normalizeStars(repo.stars);
     const activityScore = this.activitySignal(repo.updated_at);
     const languageMatch = this.matchLanguage(repo.language, criteria.technologies);
     const licenseCompatibility = this.matchLicense(repo.license?.key ?? null, criteria.preferredLicense);
-    const readmeRelevance = this.readmeSignal(readme, criteria.keywords);
-    const semanticMatch = this.baseSemanticScore(repo, criteria, userRequest);
+    const readmeRelevance = this.readmeSignal(readme, tokens);
+    let semanticMatch = this.baseSemanticScore(repo, criteria, tokens);
 
-    const defaultWeights = {
-      semanticMatch: 0.30,
-      starsScore: 0.20,
-      activityScore: 0.15,
-      readmeRelevance: 0.15,
-      languageMatch: 0.10,
-      licenseCompatibility: 0.10,
-    };
-
-    const effectiveWeights = emphasis
-      ? { ...defaultWeights }
-      : defaultWeights;
-
-    if (emphasis) {
-      effectiveWeights.semanticMatch *= emphasis.semanticMatch;
-      effectiveWeights.starsScore *= emphasis.starsScore;
-      effectiveWeights.activityScore *= emphasis.activityScore;
-      effectiveWeights.readmeRelevance *= emphasis.readmeRelevance;
-      effectiveWeights.languageMatch *= emphasis.languageMatch;
-      effectiveWeights.licenseCompatibility *= emphasis.licenseCompatibility;
-
-      // Normalize so weights sum to 1.0
-      const sum = Object.values(effectiveWeights).reduce((a, b) => a + b, 0);
-      for (const key of Object.keys(effectiveWeights) as (keyof typeof effectiveWeights)[]) {
-        effectiveWeights[key] /= sum;
-      }
+    // Credibility penalty: repos with fewer than 100 stars get their semantic
+    // match discounted. Prevents keyword-stuffed micro-repos from outranking
+    // established projects with slightly different wording.
+    if (repo.stars < 100) {
+      semanticMatch *= 0.6; // 40% penalty
+    } else if (repo.stars < 500) {
+      semanticMatch *= 0.85; // 15% penalty
     }
+
+    const effectiveWeights = emphasis ? computeNormalized(emphasis) : DEFAULT_WEIGHTS;
 
     const total = Math.round(
       (semanticMatch * effectiveWeights.semanticMatch +
@@ -58,23 +71,55 @@ export class RankingEngine {
     };
   }
 
-  rank(
+  async rank(
     repos: GitHubRepo[],
     criteria: SearchCriteria,
     readmes: Map<number, string | null>,
     userRequest: string,
     maxResults: number,
     emphasis?: WeightEmphasis,
-  ): { repo: GitHubRepo; score: RelevanceScore }[] {
-    const scored = repos
-      .filter((r) => !r.archived)
-      .map((repo) => ({
-        repo,
-        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis),
-      }));
+  ): Promise<{ repo: GitHubRepo; score: RelevanceScore }[]> {
+    const candidates = repos.filter((r) => !r.archived);
+    const tokens = this.tokenize(criteria.keywords);
 
-    scored.sort((a, b) => b.score.total - a.score.total);
-    return scored.slice(0, maxResults);
+    if (candidates.length <= maxResults) {
+      const scored = candidates.map((repo) => ({
+        repo,
+        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens),
+      }));
+      scored.sort((a, b) => b.score.total - a.score.total);
+      return scored;
+    }
+
+    // Heap-based top-K: O(n log k) instead of O(n log n)
+    const heap: { repo: GitHubRepo; score: RelevanceScore }[] = [];
+    const BATCH_SIZE = 25; // Yield event loop every 25 repos
+
+    for (let i = 0; i < candidates.length; i++) {
+      const repo = candidates[i];
+      const score = this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens);
+      const entry = { repo, score };
+
+      if (heap.length < maxResults) {
+        heap.push(entry);
+        if (heap.length === maxResults) {
+          heapifyMin(heap);
+        }
+      } else if (entry.score.total > heap[0].score.total) {
+        heap[0] = entry;
+        siftDown(heap, 0, heap.length);
+      }
+
+      // Yield event loop every batch to keep main process responsive
+      if ((i + 1) % BATCH_SIZE === 0) {
+        // Non-blocking micro-yield
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+
+    // Sort descending for output
+    heap.sort((a, b) => b.score.total - a.score.total);
+    return heap;
   }
 
   private normalizeStars(stars: number): number {
@@ -126,11 +171,9 @@ export class RankingEngine {
     return [...tokens];
   }
 
-  private readmeSignal(readme: string | null, keywords: string[]): number {
-    if (!readme || keywords.length === 0) return 0.5;
+  private readmeSignal(readme: string | null, tokens: string[]): number {
+    if (!readme || tokens.length === 0) return 0.5;
     const text = readme.toLowerCase();
-    const tokens = this.tokenize(keywords);
-    if (tokens.length === 0) return 0.5;
     let hits = 0;
     for (const t of tokens) {
       if (text.includes(t)) hits++;
@@ -138,12 +181,11 @@ export class RankingEngine {
     return Math.min(1, hits / tokens.length);
   }
 
-  private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, userRequest: string): number {
+  private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[]): number {
     let score = 0.3;
     const desc = (repo.description ?? '').toLowerCase();
     const topics = repo.topics.map((t) => t.toLowerCase());
     const fullName = repo.full_name.toLowerCase();
-    const tokens = this.tokenize(criteria.keywords);
 
     // Token-level matching (more granular, handles multi-word query strings)
     for (const token of tokens) {
@@ -168,5 +210,31 @@ export class RankingEngine {
     if ((repo.description?.length ?? 0) > 50) score += 0.02;
 
     return Math.min(1, score);
+  }
+}
+
+// ── Min-heap helpers for top-K ranking ──
+
+interface ScoredEntry {
+  repo: GitHubRepo;
+  score: RelevanceScore;
+}
+
+function heapifyMin(heap: ScoredEntry[]): void {
+  for (let i = Math.floor(heap.length / 2) - 1; i >= 0; i--) {
+    siftDown(heap, i, heap.length);
+  }
+}
+
+function siftDown(heap: ScoredEntry[], idx: number, size: number): void {
+  while (true) {
+    let smallest = idx;
+    const left = 2 * idx + 1;
+    const right = 2 * idx + 2;
+    if (left < size && heap[left].score.total < heap[smallest].score.total) smallest = left;
+    if (right < size && heap[right].score.total < heap[smallest].score.total) smallest = right;
+    if (smallest === idx) break;
+    [heap[idx], heap[smallest]] = [heap[smallest], heap[idx]];
+    idx = smallest;
   }
 }

@@ -20,19 +20,26 @@ export default function Settings({
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollamaBaseUrl);
   const [ollamaModel, setOllamaModel] = useState(settings.ollamaModel);
   const [githubToken, setGithubToken] = useState(settings.githubToken);
-  const [maxResults, setMaxResults] = useState(settings.maxResults);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setOllamaUrl(settings.ollamaBaseUrl);
-    setOllamaModel(settings.ollamaModel);
     setGithubToken(settings.githubToken);
-    setMaxResults(settings.maxResults);
   }, [settings]);
+
+  // Sync model selection when models load: if current model isn't in the list, pick the first one
+  useEffect(() => {
+    if (ollamaModels.length > 0) {
+      const isValid = ollamaModels.some((m) => m.name === ollamaModel);
+      if (!isValid) {
+        setOllamaModel(ollamaModels[0].name);
+      }
+    }
+  }, [ollamaModels]);
 
   const handleSave = async () => {
     setSaving(true);
-    const ok = await onSave({ ollamaBaseUrl: ollamaUrl, ollamaModel, githubToken, maxResults });
+    const ok = await onSave({ ollamaBaseUrl: ollamaUrl, ollamaModel, githubToken });
     setSaving(false);
     if (ok) onClose();
   };
@@ -71,13 +78,6 @@ export default function Settings({
                   <option key={m.name} value={m.name}>{m.name}</option>
                 ))}
               </select>
-              <input
-                type="text"
-                value={ollamaModel}
-                onChange={(e) => setOllamaModel(e.target.value)}
-                placeholder="Custom model name"
-                className="model-input"
-              />
             </div>
           </label>
         </section>
@@ -105,21 +105,6 @@ export default function Settings({
           {githubValid === false && (
             <div className="settings-error">Token invalid or expired</div>
           )}
-        </section>
-
-        {/* Display */}
-        <section className="settings-section">
-          <h3>Display</h3>
-          <label className="settings-field">
-            Max results
-            <input
-              type="number"
-              min={5}
-              max={50}
-              value={maxResults}
-              onChange={(e) => setMaxResults(parseInt(e.target.value, 10) || 20)}
-            />
-          </label>
         </section>
 
         <div className="settings-actions">

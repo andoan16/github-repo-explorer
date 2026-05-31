@@ -92,7 +92,6 @@ export interface AppSettings {
   ollamaBaseUrl: string;
   ollamaModel: string;
   theme: 'light' | 'dark' | 'system';
-  maxResults: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -100,7 +99,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ollamaBaseUrl: 'http://localhost:11434',
   ollamaModel: 'llama3.2',
   theme: 'system',
-  maxResults: 20,
 };
 
 // ── Bookmarks ──
@@ -123,6 +121,7 @@ export const IPC = {
   CLONE_REPO: 'clone:repo',
   SEARCH_REFINE: 'search:refine',
   GENERATE_EXPLANATION: 'explanation:generate',
+  SUGGESTIONS_UPDATE: 'suggestions:update',
 } as const;
 
 // ── IPC response wrappers ──

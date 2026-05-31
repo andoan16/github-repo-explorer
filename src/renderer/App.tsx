@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import SearchBar from './components/SearchBar';
 import Filters from './components/Filters';
 import ResultCard from './components/ResultCard';
@@ -17,7 +17,7 @@ const defaultFilters: SearchFilters = { language: null, license: null, minStars:
 export default function App() {
   const { settings, saveSettings } = useSettings();
   const { status: ollamaStatus, check: checkOllama, refreshModels } = useOllama();
-  const { searching, hasSearched, results, totalSearched, error, selectedResult, setSelectedResult, execute, refine, clear } = useSearch();
+  const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, clear } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
   const [filters, setFilters] = useState<SearchFilters>(defaultFilters);
@@ -27,6 +27,7 @@ export default function App() {
   const [compareIds, setCompareIds] = useState<Set<number>>(new Set());
   const [githubChecked, setGithubChecked] = useState(false);
   const [githubUser, setGithubUser] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(20);
 
   useEffect(() => {
     checkOllama(settings.ollamaBaseUrl);
@@ -54,8 +55,17 @@ export default function App() {
     return ok;
   }, [checkOllama, refreshModels]);
 
+  const lastSearchTime = useRef(0);
+  const DEBOUNCE_MS = 300;
+
   const handleSearch = useCallback((query: string) => {
+    // Debounce: prevent rapid re-submissions within 300ms
+    const now = Date.now();
+    if (now - lastSearchTime.current < DEBOUNCE_MS) return;
+    lastSearchTime.current = now;
+
     setCompareIds(new Set());
+    setVisibleCount(20);
     execute(query, filters);
   }, [execute, filters]);
 
@@ -93,6 +103,23 @@ export default function App() {
   const compareResults = useMemo(() => {
     return results.filter((r) => compareIds.has(r.repo.id));
   }, [results, compareIds]);
+
+  const displayedResults = useMemo(() => results.slice(0, visibleCount), [results, visibleCount]);
+  const hasMore = visibleCount < results.length;
+
+  // IntersectionObserver sentinel for infinite scroll
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setVisibleCount((c) => c + 20); },
+      { threshold: 0.1 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasMore, visibleCount]);
 
   const readOnly = !ollamaStatus.connected;
 
@@ -163,6 +190,20 @@ export default function App() {
                 )}
               </div>
             </div>
+            {suggestions.length > 0 && (
+              <div className="suggestions-row">
+                {suggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    className="suggestion-chip"
+                    onClick={() => refine(s)}
+                    disabled={searching}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="refinement-bar">
               <input
                 type="text"
@@ -190,7 +231,7 @@ export default function App() {
               </button>
             </div>
             <div className="results-grid">
-              {results.map((r, i) => (
+              {displayedResults.map((r, i) => (
                 <ResultCard
                   key={r.repo.id}
                   result={r}
@@ -204,6 +245,7 @@ export default function App() {
                 />
               ))}
             </div>
+            {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
           </>
         )}
 

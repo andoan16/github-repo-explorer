@@ -16,10 +16,34 @@ interface GitHubRawRepo {
   archived: boolean;
 }
 
+/** Cache READMEs per repo ID so they survive across searches. 30-min TTL. */
+interface CachedReadme {
+  text: string | null;
+  timestamp: number;
+}
+
+export interface ReadmeCacheMetrics {
+  hits: number;
+  misses: number;
+  size: number;
+}
+
+const README_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
 export class GitHubClient {
   private readonly baseUrl = 'https://api.github.com';
+  private readmeCache = new Map<number, CachedReadme>();
+  private readmeHits = 0;
+  private readmeMisses = 0;
 
   constructor(private token: string) {}
+
+  private requestInit(overrides?: { signal?: AbortSignal }): RequestInit {
+    return {
+      headers: this.headers(),
+      signal: overrides?.signal,
+    };
+  }
 
   private headers(): Record<string, string> {
     const h: Record<string, string> = {
@@ -35,7 +59,7 @@ export class GitHubClient {
   async checkToken(): Promise<{ valid: boolean; user?: string; error?: string }> {
     if (!this.token) return { valid: false, error: 'No token configured' };
     try {
-      const res = await fetch(`${this.baseUrl}/user`, { headers: this.headers() });
+      const res = await fetch(`${this.baseUrl}/user`, this.requestInit());
       if (res.status === 401) return { valid: false, error: 'Invalid or expired token' };
       if (res.status === 403) {
         const body = await res.json().catch(() => ({})) as { message?: string };
@@ -49,7 +73,7 @@ export class GitHubClient {
     }
   }
 
-  async searchRepos(params: SearchParams): Promise<{ repos: GitHubRepo[]; totalCount: number; rateLimitRemaining: number }> {
+  async searchRepos(params: SearchParams, signal?: AbortSignal): Promise<{ repos: GitHubRepo[]; totalCount: number; rateLimitRemaining: number }> {
     const qParts: string[] = [params.query];
     if (params.language) qParts.push(`language:${params.language}`);
     if (params.minStars) qParts.push(`stars:>=${params.minStars}`);
@@ -58,7 +82,7 @@ export class GitHubClient {
     const q = qParts.join(' ');
     const url = `${this.baseUrl}/search/repositories?q=${encodeURIComponent(q)}&sort=${params.sort}&order=${params.order}&per_page=${params.perPage}`;
 
-    const res = await fetch(url, { headers: this.headers() });
+    const res = await fetch(url, this.requestInit({ signal }));
     const rateLimitRemaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '0', 10);
 
     if (res.status === 403) {
@@ -94,20 +118,51 @@ export class GitHubClient {
     return { repos, totalCount: data.total_count, rateLimitRemaining };
   }
 
-  async getReadme(owner: string, repo: string, defaultBranch: string): Promise<string | null> {
+  async getReadme(owner: string, repo: string, defaultBranch: string, repoId?: number, signal?: AbortSignal): Promise<string | null> {
+    // Check repo-ID cache first (survives across searches)
+    if (repoId !== undefined) {
+      const cached = this.readmeCache.get(repoId);
+      if (cached && Date.now() - cached.timestamp < README_CACHE_TTL_MS) {
+        this.readmeHits++;
+        return cached.text;
+      }
+    }
+
+    this.readmeMisses++;
+
     try {
       const url = `${this.baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
-      const res = await fetch(url, {
-        headers: {
-          ...this.headers(),
-          'Accept': 'application/vnd.github.raw+json',
-        },
-      });
-      if (!res.ok) return null;
+      const opts: RequestInit = {
+        headers: this.headers(),
+        signal,
+      };
+      (opts.headers as Record<string, string>)['Accept'] = 'application/vnd.github.raw+json';
+      const res = await fetch(url, opts);
+      if (!res.ok) {
+        // Cache negative result too (null) so we don't retry 404s
+        if (repoId !== undefined) {
+          this.readmeCache.set(repoId, { text: null, timestamp: Date.now() });
+        }
+        return null;
+      }
       const text = await res.text();
-      return text.length > 8000 ? text.slice(0, 8000) + '\n\n... (truncated)' : text;
+      const result = text.length > 8000 ? text.slice(0, 8000) + '\n\n... (truncated)' : text;
+
+      if (repoId !== undefined) {
+        this.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
+      }
+      return result;
     } catch {
       return null;
     }
+  }
+
+  /** Return README cache performance metrics. */
+  getReadmeCacheMetrics(): ReadmeCacheMetrics {
+    return {
+      hits: this.readmeHits,
+      misses: this.readmeMisses,
+      size: this.readmeCache.size,
+    };
   }
 }

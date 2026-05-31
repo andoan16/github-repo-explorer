@@ -51,7 +51,7 @@ describe('RankingEngine', () => {
     expect(score.total).toBeLessThan(0.4);
   });
 
-  it('ranks repositories in descending order', () => {
+  it('ranks repositories in descending order', async () => {
     const repos = [
       makeMockRepo({ id: 1, full_name: 'a/low', stars: 5, description: 'Unrelated game', language: 'Lua', updated_at: '2019-01-01T00:00:00Z' }),
       makeMockRepo({ id: 2, full_name: 'b/high', stars: 25000, description: 'Self-hosted CI/CD with Docker', language: 'Go', updated_at: new Date().toISOString() }),
@@ -61,49 +61,49 @@ describe('RankingEngine', () => {
     const readmes = new Map<number, string | null>();
     readmes.set(2, 'Docker CI/CD platform. Self-hosted pipeline automation.');
 
-    const ranked = engine.rank(repos, criteria, readmes, 'CI/CD tool', 10);
+    const ranked = await engine.rank(repos, criteria, readmes, 'CI/CD tool', 10);
     expect(ranked[0].repo.id).toBe(2);
     expect(ranked[0].score.total).toBeGreaterThan(ranked[1].score.total);
     expect(ranked[1].score.total).toBeGreaterThan(ranked[2].score.total);
   });
 
-  it('filters out archived repos', () => {
+  it('filters out archived repos', async () => {
     const repos = [
       makeMockRepo({ id: 1, archived: true, full_name: 'a/archived' }),
       makeMockRepo({ id: 2, full_name: 'b/active' }),
     ];
 
-    const ranked = engine.rank(repos, criteria, new Map(), 'test', 10);
+    const ranked = await engine.rank(repos, criteria, new Map(), 'test', 10);
     expect(ranked).toHaveLength(1);
     expect(ranked[0].repo.id).toBe(2);
   });
 
-  it('respects maxResults limit', () => {
+  it('respects maxResults limit', async () => {
     const repos = Array.from({ length: 20 }, (_, i) =>
       makeMockRepo({ id: i + 1, full_name: `org/repo-${i}`, stars: 1000 - i * 50 }),
     );
-    const ranked = engine.rank(repos, criteria, new Map(), 'test', 5);
+    const ranked = await engine.rank(repos, criteria, new Map(), 'test', 5);
     expect(ranked).toHaveLength(5);
   });
 
-  it('normalizes stars correctly', () => {
+  it('normalizes stars correctly', async () => {
     const zeroStar = makeMockRepo({ id: 1, stars: 0, full_name: 'a/zero' });
     const hundredK = makeMockRepo({ id: 2, stars: 100000, full_name: 'a/huge' });
 
     const readmeStr = 'CI/CD Docker platform';
     const readmes = new Map<number, string | null>([[1, readmeStr], [2, readmeStr]]);
-    const ranked = engine.rank([zeroStar, hundredK], criteria, readmes, 'CI/CD', 10);
+    const ranked = await engine.rank([zeroStar, hundredK], criteria, readmes, 'CI/CD', 10);
     expect(ranked[1].score.starsScore).toBe(0);
     expect(ranked[0].score.starsScore).toBe(1);
   });
 
-  it('scores recently updated repos higher', () => {
+  it('scores recently updated repos higher', async () => {
     const recent = makeMockRepo({ id: 1, full_name: 'a/recent', updated_at: new Date().toISOString() });
     const old = makeMockRepo({ id: 2, full_name: 'a/old', updated_at: '2019-01-01T00:00:00Z' });
 
     const readmeStr = 'CI/CD Docker tool';
     const readmes = new Map<number, string | null>([[1, readmeStr], [2, readmeStr]]);
-    const ranked = engine.rank([recent, old], criteria, readmes, 'CI/CD', 10);
+    const ranked = await engine.rank([recent, old], criteria, readmes, 'CI/CD', 10);
     expect(ranked[0].score.activityScore).toBeGreaterThan(ranked[1].score.activityScore);
   });
 
