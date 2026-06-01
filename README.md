@@ -1,5 +1,7 @@
 # Repo Explorer
 
+![Repo Explorer Screenshot](assets/img.png)
+
 Discover GitHub repositories using natural-language descriptions via a local LLM (Ollama).
 
 Type what you need — "I want a self-hosted CI/CD platform with Docker support" — and the app uses a local LLM to understand your intent, search GitHub, and rank the best matches with explanations.
