@@ -2,7 +2,7 @@ import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/
 import type { OllamaClient } from '../ollama/client';
 import type { GitHubRepo } from '../../shared/types';
 import { computeResultStatistics, mineNegativeSpace } from './result-stats';
-import { detectVietnamese } from './vietnamese';
+import { detectVietnamese } from './vietnamese';  // kept for default fallback when precomputedIsVietnamese is not provided
 
 const INTENT_ANGLES: Record<string, string> = {
   'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
@@ -21,11 +21,12 @@ const INTENT_ANGLES: Record<string, string> = {
 export class QueryGenerator {
   constructor(private ollama: OllamaClient, private model: string) {}
 
-  async extractCriteria(userDescription: string, signal?: AbortSignal): Promise<SearchCriteria> {
-    const isVietnamese = detectVietnamese(userDescription) >= 0.3;
+  async extractCriteria(userDescription: string, signal?: AbortSignal, precomputedIsVietnamese?: boolean): Promise<SearchCriteria> {
+    // Use pre-computed flag if available to avoid redundant detectVietnamese() call
+    const isVietnamese = precomputedIsVietnamese ?? (detectVietnamese(userDescription) >= 0.3);
 
     const multilingualInstruction = isVietnamese
-      ? `\n\nIMPORTANT: The user's request is in Vietnamese. You MUST:\n1. Translate the request to English for the searchQueries\n2. Also include one query that preserves key Vietnamese technical terms (for repos that might use Vietnamese in their metadata)\n3. Extract ALL technical concepts, frameworks, programming languages, deployment preferences, and infrastructure requirements — even if they are expressed in Vietnamese\n4. Map Vietnamese terms to their English equivalents: e.g., "giám sát" → monitoring, "máy chủ" → server, "quản lý mật khẩu" → password manager, "tự host" → self-hosted, "mã nguồn mở" → open source, "giấy phép" → license, etc.\n5. The searchQueries should be in ENGLISH (GitHub API works best with English keywords)\n6. Include translated technical synonyms and alternative terminology in a separate field`
+      ? `\n\nVietnamese input. Translate to English for searchQueries. Map: giám sát→monitoring, máy chủ→server, quản lý mật khẩu→password manager, tự host→self-hosted, mã nguồn mở→open source, giấy phép→license. Include englishTranslation + technicalConcepts fields.`
       : '';
 
     const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${multilingualInstruction}
@@ -47,7 +48,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 JSON:`;
 
-    const raw = await this.ollama.generate(prompt, this.model, signal);
+    const raw = await this.ollama.generate(prompt, this.model, signal, 512);
     const criteria = this.parseJson<{
       searchQueries?: string[];
       searchQuery?: string;
@@ -73,12 +74,9 @@ JSON:`;
       queries = [userDescription];
     }
 
-    // Pad to 3 queries if we got fewer
-    while (queries.length < 3) {
-      const words = userDescription.split(/\s+/);
-      const start = (queries.length * Math.floor(words.length / 3)) % words.length;
-      queries.push(words.slice(start, start + 3).join(' '));
-    }
+    // Don't pad with garbage — 1-2 good queries beat 3 where 2 are word-slice
+    // nonsense that wastes GitHub API calls on irrelevant results
+    queries = queries.slice(0, 3);
 
     // Extract multilingual fields
     const englishTranslation = criteria.englishTranslation ?? undefined;
@@ -119,7 +117,7 @@ JSON:`;
       license: filters?.license ?? criteria.preferredLicense ?? undefined,
       sort: 'stars',
       order: 'desc',
-      perPage: 30,
+      perPage: 10,
     };
   }
 
@@ -131,7 +129,7 @@ JSON:`;
       license: filters?.license ?? criteria.preferredLicense ?? undefined,
       sort: 'stars' as const,
       order: 'desc' as const,
-      perPage: 30,
+      perPage: 10,
     }));
 
     // Add expanded keyword variants (from multilingual translation)
@@ -153,7 +151,7 @@ JSON:`;
             license: filters?.license ?? criteria.preferredLicense ?? undefined,
             sort: 'stars' as const,
             order: 'desc' as const,
-            perPage: 30,
+            perPage: 10,
           });
         }
       }
@@ -221,12 +219,7 @@ ${topRepos.map((r, i) => `${i + 1}. ${r.full_name} (★${r.stars.toLocaleString(
     // ── Negative-space warning ──
     let negSpaceBlock = '';
     if (negSpace.gaps.length > 0) {
-      negSpaceBlock = `─── NEGATIVE SPACE: MISSING FROM TOP RESULTS ───
-These keywords from the user's query are underrepresented in the current results:
-${negSpace.summary}
-
-CRITICAL: The user asked for these qualities but the results don't match well. Prioritize suggestions that address this gap — try broader terms, different angles, or acknowledge that the search intent may not align with what GitHub has. Do NOT suggest narrowing by language or license if the primary issue is a mismatch between the query and the results.
-─────────────────────────────────────────`;
+      negSpaceBlock = `Missing from results: ${negSpace.gaps.slice(0, 5).join(', ')}. Suggest broader terms for these gaps.`;
     }
 
     const prompt = `You are a GitHub search expert. A user searched GitHub and received ${resultCount} results. Suggest 3-6 natural-language refinement phrases they could use to narrow or refocus their results.
@@ -261,7 +254,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 JSON:`;
 
-    const raw = await this.ollama.generate(prompt, this.model, signal);
+    const raw = await this.ollama.generate(prompt, this.model, signal, 512);
     try {
       const suggestions = this.parseJson<string[]>(raw);
       return Array.isArray(suggestions) ? suggestions.slice(0, 6) : [];
@@ -280,7 +273,7 @@ Description: ${repoDescription ?? 'No description available'}
 
 Explanation:`;
 
-    const raw = await this.ollama.generate(prompt, this.model);
+    const raw = await this.ollama.generate(prompt, this.model, undefined, 1024);
     return raw.trim();
   }
 
@@ -329,7 +322,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 JSON:`;
 
-    const raw = await this.ollama.generate(prompt, this.model, signal);
+    const raw = await this.ollama.generate(prompt, this.model, signal, 512);
     const parsed = this.parseJson<{
       keywords?: string[];
       technologies?: string[];
@@ -355,7 +348,7 @@ JSON:`;
   async summarizeReadme(readme: string, model: string): Promise<string> {
     const content = readme.length > 4000 ? readme.slice(0, 4000) : readme;
     const prompt = `Summarize the following README in 2-3 sentences, focusing on what the project does and its key features:\n\n${content}\n\nSummary:`;
-    return this.ollama.generate(prompt, model);
+    return this.ollama.generate(prompt, model, undefined, 1024);
   }
 
   private parseJson<T>(raw: string): T {
@@ -377,27 +370,35 @@ JSON:`;
 
 /**
  * Computes a similarity ratio (0-1) between two strings using
- * a simplified Levenshtein distance.
+ * a 2-row Levenshtein distance — O(min(n,m)) space instead of O(n*m).
  */
 function levenshteinSimilarity(a: string, b: string): number {
   if (a === b) return 1;
   if (a.length === 0 || b.length === 0) return 0;
 
-  const matrix: number[][] = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  // Use the shorter string as the column dimension for less memory
+  if (a.length < b.length) {
+    [a, b] = [b, a];
+  }
 
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      const cost = b[i - 1] === a[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost,
+  let prevRow = new Array(b.length + 1);
+  let currRow = new Array(b.length + 1);
+
+  for (let j = 0; j <= b.length; j++) prevRow[j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    currRow[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = b[j - 1] === a[i - 1] ? 0 : 1;
+      currRow[j] = Math.min(
+        currRow[j - 1] + 1,
+        prevRow[j] + 1,
+        prevRow[j - 1] + cost,
       );
     }
+    [prevRow, currRow] = [currRow, prevRow];
   }
 
   const maxLen = Math.max(a.length, b.length);
-  return 1 - matrix[b.length][a.length] / maxLen;
+  return 1 - prevRow[b.length] / maxLen;
 }

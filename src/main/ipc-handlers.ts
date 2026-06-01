@@ -9,7 +9,7 @@ import { searchCache, buildSearchCacheKey, criteriaCache } from './search/cache'
 import { RankingEngine } from './ranking/engine';
 import { SettingsStore } from './settings/store';
 import { BookmarkStore } from './bookmarks/store';
-import { IPC, type GitHubRepo, type GitHubSearchResult, type SearchCriteria, type SearchTimings } from '../shared/types';
+import { IPC, type AppSettings, type GitHubRepo, type GitHubSearchResult, type SearchCriteria, type SearchTimings } from '../shared/types';
 import { boundedAllSettled } from './utils/concurrency';
 import { createPerformanceTracker } from './search/perf';
 import { VietnameseQueryExpander, VietnameseTranslationCache, translationCache, detectVietnamese } from './search/vietnamese';
@@ -29,6 +29,16 @@ interface CachedSearch {
 }
 
 let lastSearchCache: CachedSearch | null = null;
+let lastSearchParams: {
+  queries: { query: string; language?: string; license?: string; minStars?: number; sort: string; order: string }[];
+  criteria: SearchCriteria;
+  userRequest: string;
+  filters?: { language?: string | null; license?: string | null; minStars?: number };
+  page: number;
+  lastPage: number; // GitHub API caps at page 100 (1000 results)
+} | null = null;
+/** How many ranked repos have been served to the frontend so far */
+let lastServedIndex = 0;
 let searchGeneration = 0;
 
 /** Abort controllers keyed by generation — abort superseded searches mid-flight. */
@@ -43,17 +53,17 @@ function abortPriorSearch(gen: number): void {
   }
 }
 
-function getOllamaClient() {
-  const cfg = settings.load();
-  return new OllamaClient(cfg.ollamaBaseUrl);
+function getOllamaClient(cfg?: AppSettings) {
+  const c = cfg ?? settings.load();
+  return new OllamaClient(c.ollamaBaseUrl);
 }
 
-function getGitHubClient() {
-  const cfg = settings.load();
-  return new GitHubClient(cfg.githubToken);
+function getGitHubClient(cfg?: AppSettings) {
+  const c = cfg ?? settings.load();
+  return new GitHubClient(c.githubToken);
 }
 
-async function cachedSearchRepos(github: GitHubClient, params: { query: string; language?: string; license?: string; minStars?: number; sort?: string; order?: string; perPage?: number }, signal?: AbortSignal) {
+async function cachedSearchRepos(github: GitHubClient, params: { query: string; language?: string; license?: string; minStars?: number; sort?: string; order?: string; perPage?: number; page?: number }, signal?: AbortSignal) {
   const key = buildSearchCacheKey(params);
   const cached = searchCache.get(key);
   if (cached) {
@@ -66,15 +76,53 @@ async function cachedSearchRepos(github: GitHubClient, params: { query: string; 
 
 // ── Suggestion post-processing helpers ──
 
-/** Tokenizes a user query into keyword search terms. */
+/** Tokenizes a user query into keyword search terms.
+ *  Returns the broadest search-friendly phrase as the first element (used for GitHub query),
+ *  plus optional shorter sub-phrases for ranking criteria. */
 function extractFastKeywords(text: string): string[] {
-  const cleaned = text.toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
-  const words = cleaned.split(' ').filter((w) => w.length >= 2);
+  // Preserve meaningful tech punctuation: / (CI/CD), - (self-hosted), + (C++), . (Next.js)
+  // Only strip punctuation that GitHub search doesn't handle: commas, parens, quotes, etc.
+  const cleaned = text.toLowerCase()
+    .replace(/[^\w\s\/\-\+\.]/g, ' ')   // keep / - + .
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Remove common stopwords that add noise to GitHub search queries.
+  // GitHub search treats each word as required, so "with" in "CI/CD with Docker"
+  // becomes a mandatory term that filters out relevant repos.
+  const STOPWORDS = new Set(['with', 'for', 'the', 'and', 'that', 'this', 'from', 'into', 'using', 'need', 'want', 'like', 'looking']);
+  const words = cleaned.split(' ').filter((w) => w.length >= 2 && !STOPWORDS.has(w));
   if (words.length === 0) return [text.trim()];
-  const phrases = [words.join(' ')];
-  if (words.length >= 4) {
-    phrases.push(words.slice(0, 3).join(' '));
-    phrases.push(words.slice(Math.max(0, words.length - 3)).join(' '));
+
+  // Phase 1 query: send the broadest distinctive keywords, not ALL words.
+  // GitHub search requires ALL terms in results; too many terms = zero results.
+  // Strategy: cap at 2-3 distinctive keywords, preferring compound terms.
+  let queryWords = words;
+  if (words.length > 3) {
+    // Prefer compound terms (contain / - + .) as they're most specific
+    const compounds = words.filter((w) => /[\/\-\+\.]/.test(w));
+    const simple = words.filter((w) => !/[\/\-\+\.]/.test(w));
+    if (compounds.length >= 1) {
+      // Keep up to 2 compound terms — they narrow results dramatically.
+      // Adding a 3rd compound usually makes the query too restrictive.
+      const keep = Math.min(compounds.length, 2);
+      queryWords = [...compounds.slice(0, keep)];
+      // Fill remaining slots with the most important simple terms
+      const remaining = 3 - queryWords.length;
+      if (remaining > 0 && simple.length > 0) {
+        queryWords = [...queryWords, ...simple.slice(0, remaining)];
+      }
+    } else {
+      // No compounds — use first 3 words (most important per natural language)
+      queryWords = words.slice(0, 3);
+    }
+  }
+
+  // Always return the full phrase first — this is what gets sent to GitHub API.
+  const phrases = [queryWords.join(' ')];
+  // Sub-phrases for ranking criteria
+  if (words.length > 3) {
+    phrases.push(words.join(' '));
   }
   return phrases;
 }
@@ -102,11 +150,18 @@ function isSimpleQuery(text: string): boolean {
 function deduplicateSimilarQueries<T extends { query: string }>(params: T[]): T[] {
   if (params.length <= 2) return params;
   const result: T[] = [];
+  // Pre-normalize all query words to avoid redundant work per comparison
+  const normalizedCache = new Map<string, string[]>();
+  const getWords = (q: string) => {
+    if (!normalizedCache.has(q)) normalizedCache.set(q, normalizeWords(q));
+    return normalizedCache.get(q)!;
+  };
+
   for (const p of params) {
     let isDup = false;
+    const a = getWords(p.query);
     for (const existing of result) {
-      const a = normalizeWords(p.query);
-      const b = normalizeWords(existing.query);
+      const b = getWords(existing.query);
       const overlap = a.filter((w) => b.includes(w)).length;
       if (overlap === 0) continue;
       const union = new Set([...a, ...b]).size;
@@ -135,11 +190,17 @@ function normalizeWords(text: string): string[] {
 /** #6: Removes near-duplicate suggestions within the batch using Jaccard similarity. */
 function deduplicateBatch(suggestions: string[]): string[] {
   const result: string[] = [];
+  // Pre-normalize to avoid repeated string processing in O(n^2) comparisons
+  const normCache = new Map<string, string[]>();
+  const getWords = (s: string) => {
+    if (!normCache.has(s)) normCache.set(s, normalizeWords(s));
+    return normCache.get(s)!;
+  };
   for (const s of suggestions) {
-    const words = normalizeWords(s);
+    const words = getWords(s);
     let isDuplicate = false;
     for (const existing of result) {
-      const existingWords = normalizeWords(existing);
+      const existingWords = getWords(existing);
       const overlap = words.filter((w) => existingWords.includes(w)).length;
       if (overlap === 0) continue;
       const union = new Set([...words, ...existingWords]).size;
@@ -279,6 +340,7 @@ export function registerIpcHandlers(): void {
     const gen = ++searchGeneration;
     const perf = createPerformanceTracker();
     perf.start();
+    perf.beginPhase('phase1');
 
     // Abort any prior in-flight search
     abortPriorSearch(gen);
@@ -289,8 +351,8 @@ export function registerIpcHandlers(): void {
 
     try {
       const cfg = settings.load();
-      const ollama = getOllamaClient();
-      const github = getGitHubClient();
+      const ollama = getOllamaClient(cfg);
+      const github = getGitHubClient(cfg);
       const qg = new QueryGenerator(ollama, cfg.ollamaModel);
 
       // ── Fast-path: skip LLM for simple atomic queries ──
@@ -309,14 +371,15 @@ export function registerIpcHandlers(): void {
 
         const fastKeywords = extractFastKeywords(userRequest);
         const fastSearchParams = {
-          query: fastKeywords.join(' '),
+          query: fastKeywords[0],
           language: filters?.language ?? undefined,
           minStars: filters?.minStars ?? 0,
           license: filters?.license ?? undefined,
-          sort: 'stars' as const, order: 'desc' as const, perPage: 30,
+          sort: 'stars' as const, order: 'desc' as const, perPage: 10,
         };
 
         const simpleSearchResult = await cachedSearchRepos(github, fastSearchParams, ac.signal);
+        console.log(`[search] Simple query: "${fastKeywords[0]}" → ${simpleSearchResult.repos.length} repos (total: ${simpleSearchResult.totalCount})`);
         if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
         const repos = simpleSearchResult.repos;
@@ -336,234 +399,272 @@ export function registerIpcHandlers(): void {
         return { ok: true, data: { results, totalSearched: repos.length, suggestions: [] } };
       }
 
-      // ── Normal path: LLM criteria extraction + fast keyword GitHub search ──
+      // ── Phase 1: fast keyword search — return immediately ──
       const fastKeywords = extractFastKeywords(userRequest);
+      // Use only the first (most comprehensive) phrase as query.
+      // Joining all phrases into one query creates a monster string with
+      // repeated terms that GitHub API interprets as requiring ALL words,
+      // which returns zero results for anything but the most trivial queries.
       const fastSearchParams = {
-        query: fastKeywords.join(' '),
+        query: fastKeywords[0],
         language: filters?.language ?? undefined,
         minStars: filters?.minStars ?? 0,
         license: filters?.license ?? undefined,
         sort: 'stars' as const,
         order: 'desc' as const,
-        perPage: 30,
+        perPage: 10,
       };
 
-      let criteria: SearchCriteria;
-
-      // ── Check criteria cache before calling Ollama ──
-      const cachedCriteria = criteriaCache.get(userRequest);
-
-      if (cachedCriteria) {
-        criteria = cachedCriteria;
-        // Skip Ollama — use cached criteria directly
-      } else {
-        perf.beginPhase('ollama');
-        const [criteriaResult, fastSearchResult] = await Promise.allSettled([
-          qg.extractCriteria(userRequest, ac.signal),
-          cachedSearchRepos(github, fastSearchParams, ac.signal),
-        ]);
-        perf.endPhase('ollama');
-
-        // ── Fallback: LLM failed → use fast keywords + fast results ──
-        if (criteriaResult.status === 'rejected') {
-          if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-          // Fall back to fast keyword results if available
-          if (fastSearchResult.status === 'fulfilled' && fastSearchResult.value.repos.length > 0) {
-            criteria = {
-              keywords: fastKeywords.slice(0, 3),
-              technologies: [],
-              intent: 'other',
-              useCase: userRequest,
-              minStars: 0,
-              preferredLicense: null,
-              requireRecentActivity: false,
-            };
-            const ranked = await rankingEngine.rank(fastSearchResult.value.repos, criteria, new Map(), userRequest, 50);
-            const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
-              repo, readme: null, score,
-              matchExplanation: `Score: ${Math.round(score.total * 100)}% match (quick)`,
-              requestContext: userRequest,
-            }));
-            lastSearchCache = { repos: fastSearchResult.value.repos, readmes: new Map(), originalCriteria: criteria, originalRequest: userRequest, narrowCount: 0, broadCount: 0 };
-            return { ok: true, data: { results, totalSearched: fastSearchResult.value.repos.length, note: 'Quick results — LLM unavailable, using keyword search.' } };
-          }
-          const err = criteriaResult.reason;
-          const message = err instanceof Error ? err.message : String(err);
-          return { ok: false, error: `Ollama query analysis failed: ${message}.` };
-        }
-        criteria = criteriaResult.value;
-        // Cache criteria for future identical queries
-        criteriaCache.set(userRequest, criteria);
-      }
-
-      // ── Vietnamese multilingual expansion ──
-      // If the query is Vietnamese, expand search with translated variants
-      if (detectVietnamese(userRequest) >= 0.3 && !criteria.englishTranslation) {
-        try {
-          const expander = new VietnameseQueryExpander(ollama, cfg.ollamaModel);
-          const expansion = await expander.expand(userRequest, ac.signal, translationCache);
-          if (expansion) {
-            // Merge expansion into criteria
-            criteria = {
-              ...criteria,
-              englishTranslation: expansion.englishTranslation ?? criteria.englishTranslation,
-              originalQuery: expansion.originalQuery ?? criteria.originalQuery,
-              technicalConcepts: [
-                ...(criteria.technicalConcepts ?? []),
-                ...expansion.technicalConcepts,
-              ].filter((v, i, a) => a.indexOf(v) === i), // deduplicate
-              // Include expanded search variants as additional keywords
-              keywords: [
-                ...criteria.keywords,
-                ...expansion.searchVariants.filter(v => !criteria.keywords.includes(v)),
-              ].slice(0, 6), // cap at 6 keywords
-            };
-          }
-        } catch {
-          // Vietnamese expansion is best-effort; don't fail the search
-        }
-      }
+      perf.beginPhase('github');
+      const fastSearchResult = await cachedSearchRepos(github, fastSearchParams, ac.signal);
+      perf.endPhase('github');
+      // Debug: log the Phase 1 query and result count to help diagnose "no results" issues
+      console.log(`[search] Phase 1 query: "${fastKeywords[0]}" → ${fastSearchResult.repos.length} repos (total: ${fastSearchResult.totalCount})`);
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
-      // Build LLM-generated queries
-      let allParams = qg.buildSearchParamsArray(criteria, filters);
-
-      // ── Deduplicate similar queries ──
-      allParams = deduplicateSimilarQueries(allParams) as typeof allParams;
-
-      // Include fast keyword search in parallel with LLM-generated queries
-      const searchResults = await Promise.allSettled(
-        allParams.map((params) => github.searchRepos(params, ac.signal)),
-      );
-
-      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-
-      const failedQueries = searchResults.filter((r) => r.status === 'rejected').length;
-      const successfulResults = searchResults
-        .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof github.searchRepos>>> => r.status === 'fulfilled')
-        .map((r) => r.value);
-
-      if (successfulResults.length === 0) {
-        const firstError = (searchResults[0] as PromiseRejectedResult).reason;
-        const message = firstError instanceof Error ? firstError.message : String(firstError);
-        return { ok: false, error: `GitHub search failed: ${message}` };
+      if (fastSearchResult.repos.length === 0) {
+        return { ok: true, data: { results: [], totalSearched: 0, note: 'No repositories matched.' } };
       }
 
-      // Merge and deduplicate by repo ID (keep higher stars on collision)
-      const repoMap = new Map<number, GitHubRepo>();
-      let totalCount = 0;
-      for (const result of successfulResults) {
-        totalCount += result.totalCount;
-        for (const repo of result.repos) {
-          const existing = repoMap.get(repo.id);
-          if (!existing || repo.stars > existing.stars) {
-            repoMap.set(repo.id, repo);
-          }
-        }
-      }
-      const repos = [...repoMap.values()];
+      const fastCriteria: SearchCriteria = {
+        keywords: fastKeywords.slice(0, 3),
+        technologies: [],
+        intent: 'other',
+        useCase: userRequest,
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+      };
 
-      if (repos.length === 0) {
-        return {
-          ok: true,
-          data: {
-            results: [],
-            totalSearched: 0,
-            queryUsed: criteria.keywords.join(' | '),
-            note: 'No repositories matched. Try broadening your description or reducing filter constraints.',
-          },
-        };
-      }
+      perf.beginPhase('ranking');
+      const fastRanked = await rankingEngine.rank(fastSearchResult.repos, fastCriteria, new Map(), userRequest, 50);
+      perf.endPhase('ranking');
 
-      // ── Stage 1: metadata-only ranking (no READMEs yet) ──
-      const emptyReadmes = new Map<number, string | null>();
-      const stage1Ranked = await rankingEngine.rank(repos, criteria, emptyReadmes, userRequest, 50);
-
-      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-
-      // ── Fetch READMEs for top candidates only (bounded concurrency) ──
-      const README_CANDIDATES = 10;
-      const topForReadmes = stage1Ranked.slice(0, README_CANDIDATES);
-      const readmes = new Map<number, string | null>();
-
-      await boundedAllSettled(
-        topForReadmes.map((item) => async () => {
-          try {
-            const [owner, name] = item.repo.full_name.split('/');
-            const readme = await github.getReadme(owner, name, item.repo.default_branch, item.repo.id, ac.signal);
-            readmes.set(item.repo.id, readme);
-          } catch {
-            readmes.set(item.repo.id, null);
-          }
-        }),
-        8,
-      );
-
-      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-
-      // ── Stage 2: re-rank with README enrichment ──
-      const ranked = await rankingEngine.rank(repos, criteria, readmes, userRequest, 50);
-
-      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-
-      const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
+      const fastResults: GitHubSearchResult[] = fastRanked.slice(0, 10).map(({ repo, score }) => ({
         repo,
-        readme: readmes.get(repo.id) ?? null,
+        readme: null,
         score,
         matchExplanation: `Score: ${Math.round(score.total * 100)}% match`,
         requestContext: userRequest,
       }));
 
-      const note = failedQueries > 0
-        ? `${failedQueries}/${allParams.length} search queries failed; showing results from ${successfulResults.length} queries.`
-        : undefined;
+      // Save state so future scroll-reveal and searchMore work
+      lastSearchCache = {
+        repos: fastRanked.map(r => r.repo),
+        readmes: new Map(),
+        originalCriteria: fastCriteria,
+        originalRequest: userRequest,
+        narrowCount: 0,
+        broadCount: 0,
+      };
+      lastServedIndex = fastResults.length;
 
-      lastSearchCache = { repos, readmes, originalCriteria: criteria, originalRequest: userRequest, narrowCount: 0, broadCount: 0 };
+      // ── Collect cache metrics for Phase 1 timings ──
+      const criteriaMetrics = criteriaCache.getMetrics();
+      const searchMetrics = searchCache.getMetrics();
+      const readmeMetrics = github.getReadmeCacheMetrics();
+      perf.setCacheMetrics({
+        criteriaHits: criteriaMetrics.hits,
+        criteriaMisses: criteriaMetrics.misses,
+        criteriaSize: criteriaMetrics.size,
+        searchHits: searchMetrics.hits,
+        searchMisses: searchMetrics.misses,
+        searchSize: searchMetrics.size,
+        readmeHits: readmeMetrics.hits,
+        readmeMisses: readmeMetrics.misses,
+        readmeSize: readmeMetrics.size,
+      });
+      perf.endPhase('phase1'); // mark Phase 1 complete
+      const timings = perf.getTimings();
 
-      // ── Fire-and-forget refinement suggestions via IPC push ──
-      const scoreValues = ranked.map((r) => r.score.total * 100).sort((a, b) => a - b);
-      const scorePercentiles = scoreValues.length > 0 ? {
-        top: Math.round(scoreValues[scoreValues.length - 1]),
-        median: Math.round(scoreValues[Math.floor(scoreValues.length / 2)]),
-        bottom: Math.round(scoreValues[0]),
-        above80: scoreValues.filter((s) => s >= 80).length,
-        below50: scoreValues.filter((s) => s < 50).length,
-        total: scoreValues.length,
-      } : undefined;
-
-      // Capture variables for closure
-      const capturedQ = qg;
-      const capturedUserReq = userRequest;
-      const capturedKeys = criteria.keywords;
-      const capturedTechs = criteria.technologies;
-      const capturedIntent = criteria.intent;
-      const capturedRepos = repos;
-      const capturedFilters = filters;
+      // ── Phase 2: full LLM pipeline runs asynchronously in background ──
+      // Fire-and-forget: returns fast results immediately, then enriches via IPC push
+      const capturedEvent = _event;
       const capturedGen = gen;
+      const capturedRequest = userRequest;
+      const capturedFilters = filters;
+      const capturedFastResult = fastSearchResult;
+      const capturedCfg = cfg;
 
       Promise.resolve().then(async () => {
-        if (searchGeneration !== capturedGen) return;
-        try {
-          const candidates = await capturedQ.generateRefinementSuggestions(
-            capturedUserReq, capturedKeys, capturedTechs, capturedIntent,
-            capturedRepos.length, capturedRepos, scorePercentiles, undefined,
-          );
-          const validator = new RefinementValidator();
-          const result = validator.validate(candidates, capturedRepos, {
-            language: capturedFilters?.language ?? null,
-            license: capturedFilters?.license ?? null,
-            minStars: capturedFilters?.minStars ?? 0,
-          });
-          let final = deduplicateBatch(result.valid);
-          final = guaranteeCoverage(final, capturedRepos);
-          _event.sender.send(IPC.SUGGESTIONS_UPDATE, { suggestions: final });
-        } catch {
-          // Silently ignore
-        }
-      });
+        if (capturedGen !== searchGeneration) return;
 
-      return { ok: true, data: { results, totalSearched: repos.length, note, suggestions: [] } };
+        // Phase 2 performance tracking
+        perf.beginPhase('phase2');
+
+        try {
+          // Reuse outer scope clients instead of creating new instances — avoids
+          // losing per-instance caches (readmeCache) and re-establishing TCP connections
+          const github2 = getGitHubClient(capturedCfg);
+
+          // Detect Vietnamese ONCE and share the result with extractCriteria and expander
+          const viConfidence = detectVietnamese(capturedRequest);
+          const isVietnamese = viConfidence >= 0.3;
+
+          let criteria: SearchCriteria;
+          const cachedCriteria = criteriaCache.get(capturedRequest);
+          if (cachedCriteria) {
+            criteria = cachedCriteria;
+          } else {
+            try {
+              perf.beginPhase('ollama');
+              // Pass pre-computed Vietnamese flag to avoid redundant detectVietnamese() call in extractCriteria
+              criteria = await qg.extractCriteria(capturedRequest, ac.signal, isVietnamese);
+              perf.endPhase('ollama');
+            } catch {
+              // LLM failed — fast results already displayed, nothing more to do
+              perf.endPhase('ollama');
+              return;
+            }
+            criteriaCache.set(capturedRequest, criteria);
+          }
+
+          // Vietnamese expansion — only when extractCriteria didn't already produce a translation
+          // extractCriteria handles Vietnamese in its prompt, so this is a fallback for partial coverage
+          if (isVietnamese && !criteria.englishTranslation) {
+            try {
+              perf.beginPhase('vietnamese');
+              const expander = new VietnameseQueryExpander(ollama, capturedCfg.ollamaModel);
+              const expansion = await expander.expand(capturedRequest, ac.signal, translationCache, viConfidence);
+              perf.endPhase('vietnamese');
+              if (expansion) {
+                criteria = {
+                  ...criteria,
+                  englishTranslation: expansion.englishTranslation ?? criteria.englishTranslation,
+                  originalQuery: expansion.originalQuery ?? criteria.originalQuery,
+                  technicalConcepts: [
+                    ...(criteria.technicalConcepts ?? []),
+                    ...expansion.technicalConcepts,
+                  ].filter((v, i, a) => a.indexOf(v) === i),
+                  keywords: [
+                    ...criteria.keywords,
+                    ...expansion.searchVariants.filter((v: string) => !criteria.keywords.includes(v)),
+                  ].slice(0, 6),
+                };
+              }
+            } catch { /* best-effort */ }
+          }
+
+          if (capturedGen !== searchGeneration) return;
+
+          // Build LLM queries + dedup
+          let allParams = qg.buildSearchParamsArray(criteria, capturedFilters);
+          allParams = deduplicateSimilarQueries(allParams) as typeof allParams;
+
+          // Fire all LLM-generated queries with bounded concurrency
+          // Authenticated users get 5000 req/hr — use concurrency 5 for faster results.
+          // Unauthenticated users get 60 req/hr — keep at 3 to avoid rate limits.
+          const githubConcurrency = capturedCfg.githubToken ? 5 : 3;
+          const searchResults = await boundedAllSettled(
+            allParams.map((params) => () => cachedSearchRepos(github2, params, ac.signal)),
+            githubConcurrency,
+          );
+
+          if (capturedGen !== searchGeneration) return;
+
+          // Merge fast keyword repos + LLM repos
+          const successfulResults = searchResults
+            .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof github2.searchRepos>>> => r.status === 'fulfilled')
+            .map((r) => r.value);
+
+          // Include fast results in the merge
+          successfulResults.push(capturedFastResult);
+
+          const repoMap = new Map<number, GitHubRepo>();
+          let totalCount = 0;
+          for (const result of successfulResults) {
+            totalCount += result.totalCount;
+            for (const repo of result.repos) {
+              const existing = repoMap.get(repo.id);
+              if (!existing || repo.stars > existing.stars) {
+                repoMap.set(repo.id, repo);
+              }
+            }
+          }
+          const repos = [...repoMap.values()];
+          if (repos.length === 0) return;
+
+          // Rank with enriched criteria + dedup
+          const ranked = await rankingEngine.rank(repos, criteria, new Map(), capturedRequest, 50);
+          if (capturedGen !== searchGeneration) return;
+
+          const enrichedResults: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
+            repo,
+            readme: null,
+            score,
+            matchExplanation: `Score: ${Math.round(score.total * 100)}% match`,
+            requestContext: capturedRequest,
+          }));
+
+          // Update caches
+          lastSearchCache = {
+            repos: ranked.map(r => r.repo),
+            readmes: new Map(),
+            originalCriteria: criteria,
+            originalRequest: capturedRequest,
+            narrowCount: 0,
+            broadCount: 0,
+          };
+          lastServedIndex = enrichedResults.length;
+          lastSearchParams = {
+            queries: allParams.map(p => ({ query: p.query, language: p.language, license: p.license, minStars: p.minStars, sort: p.sort, order: p.order })),
+            criteria,
+            userRequest: capturedRequest,
+            filters: capturedFilters,
+            page: 1,
+            lastPage: Math.min(Math.ceil(totalCount / 10), Math.ceil(1000 / 10)),
+          };
+
+          // Push enriched results to frontend
+          capturedEvent.sender.send(IPC.RESULTS_UPDATE, {
+            results: enrichedResults.slice(0, 10),
+            totalSearched: repos.length,
+            moreAvailable: enrichedResults.length > 10 || (lastSearchParams ? lastSearchParams.page < lastSearchParams.lastPage : false),
+          });
+
+          // Suggestion generation decoupled: push results first, then fire-and-forget
+          // suggestions in a separate microtask so the LLM call (~3-10s) doesn't delay
+          // the Phase 2 Promise from resolving.
+          const scoreValues = ranked.map(r => r.score.total * 100).sort((a, b) => a - b);
+          const scorePercentiles = scoreValues.length > 0 ? {
+            top: Math.round(scoreValues[scoreValues.length - 1]),
+            median: Math.round(scoreValues[Math.floor(scoreValues.length / 2)]),
+            bottom: Math.round(scoreValues[0]),
+            above80: scoreValues.filter(s => s >= 80).length,
+            below50: scoreValues.filter(s => s < 50).length,
+            total: scoreValues.length,
+          } : undefined;
+
+          Promise.resolve().then(async () => {
+            try {
+              perf.beginPhase('suggestion');
+              const candidates = await qg.generateRefinementSuggestions(
+                capturedRequest, criteria.keywords, criteria.technologies, criteria.intent,
+                repos.length, repos, scorePercentiles, undefined,
+              );
+              perf.endPhase('suggestion');
+              const validator = new RefinementValidator();
+              const result = validator.validate(candidates, repos, {
+                language: capturedFilters?.language ?? null,
+                license: capturedFilters?.license ?? null,
+                minStars: capturedFilters?.minStars ?? 0,
+              });
+              let final = deduplicateBatch(result.valid);
+              final = guaranteeCoverage(final, repos);
+              if (capturedGen === searchGeneration) {
+                capturedEvent.sender.send(IPC.SUGGESTIONS_UPDATE, { suggestions: final });
+              }
+            } catch {
+              perf.endPhase('suggestion');
+              /* silently ignore */
+            }
+          }).catch(() => {});
+          perf.endPhase('phase2');
+        } catch { /* phase 2 is best-effort */ }
+      }).catch(() => {});
+
+      return { ok: true, data: { results: fastResults, totalSearched: fastSearchResult.repos.length, suggestions: [], timings } };
     } catch (err) {
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -666,7 +767,7 @@ export function registerIpcHandlers(): void {
       }
 
       // ── LLM fallback: pass to Ollama for full criteria refinement ──
-      const ollama = getOllamaClient();
+      const ollama = getOllamaClient(cfg);
       const qg = new QueryGenerator(ollama, cfg.ollamaModel);
 
       let refinedCriteria: SearchCriteria;
@@ -720,11 +821,132 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  // ── Load More: serve from ranked cache first, then paginate GitHub API ──
+  ipcMain.handle(IPC.SEARCH_MORE, async () => {
+    if (!lastSearchParams || !lastSearchCache) {
+      return { ok: false, error: 'No search to load more from. Run a search first.' };
+    }
+
+    // ── Serve from in-memory cache first (already-ranked repos we haven't sent yet) ──
+    const BATCH_SIZE = 10;
+    if (lastServedIndex < lastSearchCache.repos.length) {
+      const nextBatch = lastSearchCache.repos.slice(lastServedIndex, lastServedIndex + BATCH_SIZE);
+      lastServedIndex += nextBatch.length;
+
+      const results: GitHubSearchResult[] = nextBatch.map((repo) => ({
+        repo,
+        readme: null, // READMEs fetched lazily
+        score: { total: 0, semanticMatch: 0, starsScore: 0, activityScore: 0, readmeRelevance: 0, languageMatch: 0, licenseCompatibility: 0 },
+        matchExplanation: 'Cached result',
+        requestContext: lastSearchParams!.userRequest,
+      }));
+
+      const moreAvailable = lastServedIndex < lastSearchCache.repos.length || lastSearchParams.page < lastSearchParams.lastPage;
+
+      return {
+        ok: true,
+        data: {
+          results,
+          moreAvailable,
+          totalSearched: lastSearchCache.repos.length,
+        },
+      };
+    }
+
+    // ── Cache exhausted — fetch next page from GitHub API ──
+    if (lastSearchParams.page >= lastSearchParams.lastPage) {
+      return { ok: true, data: { results: [] as GitHubSearchResult[], moreAvailable: false, totalSearched: lastSearchCache.repos.length } };
+    }
+
+    const nextPage = lastSearchParams.page + 1;
+    const github = getGitHubClient(settings.load());
+
+    try {
+      // Only re-query the top (highest-yield) query for pagination — not all queries.
+      // This avoids 3-6 redundant GitHub API calls per "load more" action.
+      const topQuery = lastSearchParams.queries[0]; // first query is the broadest/most relevant
+      let searchResult: { repos: GitHubRepo[]; totalCount: number; rateLimitRemaining: number };
+      try {
+        searchResult = await cachedSearchRepos(github, {
+          query: topQuery.query,
+          language: topQuery.language,
+          license: topQuery.license,
+          minStars: topQuery.minStars,
+          sort: topQuery.sort as 'stars',
+          order: topQuery.order as 'desc',
+          perPage: 10,
+          page: nextPage,
+        });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+
+      const existingIds = new Set(lastSearchCache.repos.map(r => r.id));
+      const newRepos = new Map<number, GitHubRepo>();
+
+      for (const repo of searchResult.repos) {
+        if (!existingIds.has(repo.id)) {
+          const existing = newRepos.get(repo.id);
+          if (!existing || repo.stars > existing.stars) {
+            newRepos.set(repo.id, repo);
+          }
+        }
+      }
+
+      if (newRepos.size === 0) {
+        return { ok: true, data: { results: [] as GitHubSearchResult[], moreAvailable: false, totalSearched: lastSearchCache.repos.length } };
+      }
+
+      const newReposArray = [...newRepos.values()];
+      const ranked = await rankingEngine.rank(newReposArray, lastSearchParams.criteria, lastSearchCache.readmes, lastSearchParams.userRequest, 50);
+
+      const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
+        repo,
+        readme: null, // READMEs fetched lazily
+        score,
+        matchExplanation: `Score: ${Math.round(score.total * 100)}% match`,
+        requestContext: lastSearchParams!.userRequest,
+      }));
+
+      // Update our stored state
+      lastSearchParams.page = nextPage;
+      for (const repo of newReposArray) {
+        lastSearchCache.repos.push(repo);
+      }
+      lastServedIndex = lastSearchCache.repos.length;
+
+      const moreAvailable = nextPage < lastSearchParams.lastPage;
+
+      return {
+        ok: true,
+        data: {
+          results,
+          moreAvailable,
+          totalSearched: lastSearchCache.repos.length,
+          page: nextPage,
+        },
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Lazy README fetch (triggered when user opens repo detail) ──
+  ipcMain.handle(IPC.GET_README, async (_event, params: { owner: string; repo: string; branch: string; repoId: number }) => {
+    try {
+      const github = getGitHubClient(settings.load());
+      const readme = await github.getReadme(params.owner, params.repo, params.branch, params.repoId);
+      return { ok: true, data: { readme } };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // ── Explanation (lazy-loaded) ──
   ipcMain.handle(IPC.GENERATE_EXPLANATION, async (_event, params: { repoName: string; repoDescription: string | null; requestContext: string }) => {
     try {
       const cfg = settings.load();
-      const ollama = getOllamaClient();
+      const ollama = getOllamaClient(cfg);
       const qg = new QueryGenerator(ollama, cfg.ollamaModel);
       const explanation = await qg.generateMatchExplanation(
         params.repoName,

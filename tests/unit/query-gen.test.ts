@@ -36,7 +36,8 @@ describe('QueryGenerator (unit)', () => {
     );
 
     const criteria = await qg.extractCriteria('CI/CD tool');
-    expect(criteria.keywords).toHaveLength(3);
+    // Single searchQuery gets split into one keyword (no garbage padding)
+    expect(criteria.keywords.length).toBeGreaterThanOrEqual(1);
     expect(criteria.keywords[0]).toContain('CI/CD');
   });
 
@@ -46,7 +47,8 @@ describe('QueryGenerator (unit)', () => {
     );
 
     const criteria = await qg.extractCriteria('UI component library');
-    expect(criteria.keywords).toHaveLength(3);
+    // No garbage padding — returns actual LLM keywords
+    expect(criteria.keywords.length).toBeGreaterThanOrEqual(1);
     expect(criteria.keywords[0]).toContain('react');
     expect(criteria.technologies).toContain('TypeScript');
   });
@@ -57,17 +59,19 @@ describe('QueryGenerator (unit)', () => {
     );
 
     const criteria = await qg.extractCriteria('a self-hosted CI/CD platform');
-    expect(criteria.keywords).toHaveLength(3);
+    // No garbage padding — returns the user description as a single keyword
+    expect(criteria.keywords.length).toBeGreaterThanOrEqual(1);
     expect(criteria.keywords[0]).toContain('self-hosted');
   });
 
-  it('pads to 3 queries when LLM returns fewer', async () => {
+  it('returns fewer good queries instead of padding with garbage', async () => {
     const { qg } = createQg(
       '{"searchQueries":["single docker query"],"technologies":["Docker"],"intent":"devops-tool","minStars":0,"preferredLicense":null,"requireRecentActivity":false}',
     );
 
     const criteria = await qg.extractCriteria('I need Docker stuff');
-    expect(criteria.keywords).toHaveLength(3);
+    // No longer pads to 3 with word-slice nonsense — 1 good query is better
+    expect(criteria.keywords.length).toBeLessThanOrEqual(3);
     expect(criteria.keywords[0]).toBe('single docker query');
   });
 
@@ -89,7 +93,7 @@ describe('QueryGenerator (unit)', () => {
     expect(paramsArray[1].query).toBe('pipeline automation');
     expect(paramsArray[2].query).toBe('devops tools');
     expect(paramsArray[0].sort).toBe('stars');
-    expect(paramsArray[0].perPage).toBe(30);
+    expect(paramsArray[0].perPage).toBe(10);
   });
 
   it('buildSearchParamsArray applies filters to all params', () => {

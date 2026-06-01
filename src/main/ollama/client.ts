@@ -1,8 +1,5 @@
 import type { OllamaModel, OllamaStatus } from '../../shared/types';
 
-const keepaliveAgent = new (require('http').Agent)({ keepAlive: true, keepAliveMsecs: 30000 });
-const httpsKeepaliveAgent = new (require('https').Agent)({ keepAlive: true, keepAliveMsecs: 30000 });
-
 export class OllamaClient {
   constructor(private baseUrl: string) {}
 
@@ -10,8 +7,6 @@ export class OllamaClient {
     try {
       const res = await fetch(`${this.baseUrl}/api/tags`, {
         signal: signal ?? AbortSignal.timeout(5000),
-        // @ts-ignore — Node.js fetch supports agent
-        agent: this.baseUrl.startsWith('https') ? httpsKeepaliveAgent : keepaliveAgent,
       });
       if (!res.ok) {
         return { connected: false, error: `Ollama returned HTTP ${res.status}`, models: [] };
@@ -33,15 +28,13 @@ export class OllamaClient {
   async listModels(signal?: AbortSignal): Promise<OllamaModel[]> {
     const res = await fetch(`${this.baseUrl}/api/tags`, {
       signal,
-      // @ts-ignore
-      agent: this.baseUrl.startsWith('https') ? httpsKeepaliveAgent : keepaliveAgent,
     });
     if (!res.ok) throw new Error(`Ollama /api/tags failed: HTTP ${res.status}`);
     const data = (await res.json()) as { models: OllamaModel[] };
     return data.models ?? [];
   }
 
-  async generate(prompt: string, model: string, signal?: AbortSignal): Promise<string> {
+  async generate(prompt: string, model: string, signal?: AbortSignal, maxTokens?: number): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -49,11 +42,9 @@ export class OllamaClient {
         model,
         prompt,
         stream: false,
-        options: { temperature: 0.3, num_predict: 2048 },
+        options: { temperature: 0.3, num_predict: maxTokens ?? 512 },
       }),
       signal: signal ?? AbortSignal.timeout(120_000),
-      // @ts-ignore
-      agent: this.baseUrl.startsWith('https') ? httpsKeepaliveAgent : keepaliveAgent,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

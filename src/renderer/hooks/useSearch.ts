@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import type { GitHubSearchResult } from '../../shared/types';
 
 interface SearchState {
@@ -8,12 +8,13 @@ interface SearchState {
   totalSearched: number;
   error: string | null;
   suggestions: string[];
+  moreAvailable: boolean;
+  /** True while background LLM enrichment is in progress */
+  enriching: boolean;
+  /** True while loading-more pagination is in progress (does NOT hide results) */
+  loadingMore: boolean;
 }
 
-/**
- * Returns true if `text` is semantically similar to any refinement in `applied`.
- * Catches "prefer Go" ≈ "try Go" ≈ "Go-based tools" ≈ "filter to Go".
- */
 function isRefinementDuplicate(text: string, applied: Set<string>): boolean {
   if (applied.has(text)) return true;
 
@@ -28,12 +29,8 @@ function isRefinementDuplicate(text: string, applied: Set<string>): boolean {
     const union = new Set([...words, ...appliedWords]).size;
     const jaccard = overlap / union;
 
-    // High word-set overlap → same intent (lowered threshold for short phrases)
     if (jaccard >= 0.33) return true;
 
-    // Single-content-word match: when either phrase has only one
-    // meaningful word, any overlap is a duplicate
-    // e.g. "prefer Go" (content: ["go"]) ≈ "Go based tools" (content: ["go","based","tools"])
     if (
       overlap >= 1 &&
       (words.length === 1 || appliedWords.length === 1)
@@ -41,7 +38,6 @@ function isRefinementDuplicate(text: string, applied: Set<string>): boolean {
       return true;
     }
 
-    // Subset check: one phrase is entirely contained in the other
     if (
       overlap === Math.min(words.length, appliedWords.length) &&
       overlap >= 2
@@ -76,17 +72,44 @@ export function useSearch() {
     totalSearched: 0,
     error: null,
     suggestions: [],
+    moreAvailable: false,
+    enriching: false,
+    loadingMore: false,
   });
 
   const [selectedResult, setSelectedResult] = useState<GitHubSearchResult | null>(null);
 
-  // Track refinements applied this session so we don't suggest them again
   const appliedRefinements = useRef(new Set<string>());
+  const currentGenRef = useRef(0);
+
+  // Listen for async enriched results from backend
+  useEffect(() => {
+    const cleanup = window.repoExplorer.onResultsUpdate((data: { results: GitHubSearchResult[]; totalSearched: number; moreAvailable: boolean }) => {
+      setState(s => ({
+        ...s,
+        results: data.results,
+        totalSearched: data.totalSearched,
+        moreAvailable: data.moreAvailable,
+        enriching: false,
+      }));
+    });
+    return cleanup;
+  }, []);
+
+  useEffect(() => {
+    const cleanup = window.repoExplorer.onSuggestionsUpdate((suggestions: string[]) => {
+      setState(s => ({
+        ...s,
+        suggestions: suggestions.filter((sg) => !isRefinementDuplicate(sg, appliedRefinements.current)),
+      }));
+    });
+    return cleanup;
+  }, []);
 
   const execute = useCallback(async (request: string, filters?: unknown) => {
     if (!request.trim()) return;
 
-    // Clear applied refinements on brand-new search
+    currentGenRef.current++;
     appliedRefinements.current = new Set();
 
     setState({
@@ -96,6 +119,9 @@ export function useSearch() {
       totalSearched: 0,
       error: null,
       suggestions: [],
+      moreAvailable: false,
+      enriching: false,
+      loadingMore: false,
     });
     setSelectedResult(null);
 
@@ -103,14 +129,16 @@ export function useSearch() {
 
     if (res.ok && res.data) {
       const data = res.data as { results: GitHubSearchResult[]; totalSearched: number; suggestions?: string[] };
-      const rawSuggestions = data.suggestions ?? [];
       setState({
         searching: false,
         hasSearched: true,
         results: data.results,
         totalSearched: data.totalSearched,
         error: null,
-        suggestions: rawSuggestions.filter((s) => !isRefinementDuplicate(s, appliedRefinements.current)),
+        moreAvailable: true, // more will come from async enrichment
+        suggestions: [],
+        enriching: true, // background LLM is now running
+        loadingMore: false,
       });
     } else {
       setState({
@@ -120,6 +148,9 @@ export function useSearch() {
         totalSearched: 0,
         error: res.error ?? 'Unknown error',
         suggestions: [],
+        moreAvailable: false,
+        enriching: false,
+        loadingMore: false,
       });
     }
   }, []);
@@ -127,7 +158,6 @@ export function useSearch() {
   const refine = useCallback(async (refinementText: string) => {
     if (!refinementText.trim()) return;
 
-    // Record this refinement so we don't suggest it again
     appliedRefinements.current.add(refinementText.trim());
 
     setState({
@@ -137,6 +167,9 @@ export function useSearch() {
       totalSearched: 0,
       error: null,
       suggestions: [],
+      moreAvailable: false,
+      enriching: false,
+      loadingMore: false,
     });
     setSelectedResult(null);
 
@@ -151,6 +184,9 @@ export function useSearch() {
         totalSearched: data.totalSearched,
         error: null,
         suggestions: [],
+        moreAvailable: false,
+        enriching: false,
+        loadingMore: false,
       });
     } else {
       setState({
@@ -160,7 +196,34 @@ export function useSearch() {
         totalSearched: 0,
         error: res.error ?? 'Unknown error during refinement',
         suggestions: [],
+        moreAvailable: false,
+        enriching: false,
+        loadingMore: false,
       });
+    }
+  }, []);
+
+  const loadMore = useCallback(async () => {
+    // Use loadingMore, NOT searching — we want to keep results visible
+    // while paginating. Setting searching=true hides the entire results
+    // section and shows the big center spinner, which collapses the DOM
+    // and scrolls the user back to the top.
+    setState(s => ({ ...s, loadingMore: true }));
+
+    const res = await window.repoExplorer.searchMore();
+
+    if (res.ok && res.data) {
+      const data = res.data as { results: GitHubSearchResult[]; moreAvailable: boolean; totalSearched: number };
+      setState(s => ({
+        ...s,
+        loadingMore: false,
+        results: [...s.results, ...data.results],
+        totalSearched: data.totalSearched,
+        moreAvailable: data.moreAvailable,
+      }));
+    } else {
+      console.error('Load more failed:', res.error);
+      setState(s => ({ ...s, loadingMore: false }));
     }
   }, []);
 
@@ -173,9 +236,12 @@ export function useSearch() {
       totalSearched: 0,
       error: null,
       suggestions: [],
+      moreAvailable: false,
+      enriching: false,
+      loadingMore: false,
     });
     setSelectedResult(null);
   }, []);
 
-  return { ...state, selectedResult, setSelectedResult, execute, refine, clear };
+  return { ...state, selectedResult, setSelectedResult, execute, refine, loadMore, clear };
 }

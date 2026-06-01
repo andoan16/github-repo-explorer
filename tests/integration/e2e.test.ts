@@ -105,7 +105,7 @@ describe('End-to-end search flow', () => {
       license: filters.license ?? undefined,
       sort: 'stars',
       order: 'desc',
-      perPage: 30,
+      perPage: 10,
     };
 
     const { repos } = await githubMock.searchRepos(params);
@@ -162,8 +162,8 @@ describe('End-to-end search flow', () => {
         rateLimitRemaining: 4998,
       });
 
-    const lowResult = await githubMock.searchRepos({ query: 'q1', sort: 'stars', order: 'desc', perPage: 30 });
-    const highResult = await githubMock.searchRepos({ query: 'q2', sort: 'stars', order: 'desc', perPage: 30 });
+    const lowResult = await githubMock.searchRepos({ query: 'q1', sort: 'stars', order: 'desc', perPage: 10 });
+    const highResult = await githubMock.searchRepos({ query: 'q2', sort: 'stars', order: 'desc', perPage: 10 });
 
     // Manual dedup logic (same as handler)
     const repoMap = new Map<number, typeof lowResult.repos[0]>();
@@ -197,9 +197,9 @@ describe('End-to-end search flow', () => {
       });
 
     const results = await Promise.allSettled([
-      githubMock.searchRepos({ query: 'q1', sort: 'stars', order: 'desc', perPage: 30 }),
-      githubMock.searchRepos({ query: 'q2', sort: 'stars', order: 'desc', perPage: 30 }),
-      githubMock.searchRepos({ query: 'q3', sort: 'stars', order: 'desc', perPage: 30 }),
+      githubMock.searchRepos({ query: 'q1', sort: 'stars', order: 'desc', perPage: 10 }),
+      githubMock.searchRepos({ query: 'q2', sort: 'stars', order: 'desc', perPage: 10 }),
+      githubMock.searchRepos({ query: 'q3', sort: 'stars', order: 'desc', perPage: 10 }),
     ]);
 
     const successful = results.filter((r) => r.status === 'fulfilled');

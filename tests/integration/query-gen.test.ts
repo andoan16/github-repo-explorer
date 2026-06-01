@@ -32,7 +32,8 @@ describe('QueryGenerator (integration)', () => {
     const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
 
     const criteria = await qg.extractCriteria('test request for a thing');
-    expect(criteria.keywords).toHaveLength(3);
+    // No garbage padding — returns actual LLM keywords
+    expect(criteria.keywords.length).toBeGreaterThanOrEqual(1);
     expect(criteria.keywords[0]).toBe('test');
     expect(criteria.technologies).toEqual(['Go']);
   });
@@ -55,7 +56,7 @@ describe('QueryGenerator (integration)', () => {
     expect(params.query).toContain('ci-cd');
     expect(params.sort).toBe('stars');
     expect(params.order).toBe('desc');
-    expect(params.perPage).toBe(30);
+    expect(params.perPage).toBe(10);
   });
 
   it('applies filter overrides to search params', () => {
@@ -99,7 +100,7 @@ describe('QueryGenerator (integration)', () => {
     expect(paramsArray[0].query).toBe('docker');
     expect(paramsArray[1].query).toBe('ci-cd');
     expect(paramsArray[2].query).toBe('pipeline');
-    expect(paramsArray[0].perPage).toBe(30);
+    expect(paramsArray[0].perPage).toBe(10);
   });
 
   it('handles Ollama being unavailable during query generation', async () => {

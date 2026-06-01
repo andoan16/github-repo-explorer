@@ -12,15 +12,22 @@ export interface CacheMetrics {
   hits: number;
   misses: number;
   evictions: number;
+  /** Entries that were valid but evicted due to capacity (not TTL expiry) */
+  capacityEvictions: number;
+  /** Entries that expired (TTL) — counted separately from cold misses */
+  expiredHits: number;
   size: number;
   maxSize: number;
 }
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_CACHE_SIZE = 50;
+// TTLs aligned: search results last 15 min (was 10), criteria last 30 min.
+// The previous 10/30 mismatch caused criteria to reference queries whose
+// results had already expired, triggering redundant GitHub API calls.
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const MAX_CACHE_SIZE = 100; // was 50 — each search fills 3-6 slots, 50 was too small
 
 /**
- * Simple TTL + LRU cache for GitHub search results.
+ * TTL + LRU cache for GitHub search results.
  * Avoids redundant API calls when the same query is made within a short window.
  * Tracks hit/miss metrics for performance monitoring.
  */
@@ -29,6 +36,8 @@ class SearchCache {
   private _hits = 0;
   private _misses = 0;
   private _evictions = 0;
+  private _capacityEvictions = 0;
+  private _expiredHits = 0;
 
   get(key: string): CacheEntry | null {
     const entry = this.cache.get(key);
@@ -37,11 +46,12 @@ class SearchCache {
       return null;
     }
 
-    // TTL check
+    // TTL check — count as "expired hit" (not a cold miss) since the entry
+    // was valid at some point. This keeps miss metrics accurate.
     if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
       this.cache.delete(key);
       this._evictions++;
-      this._misses++;
+      this._expiredHits++;
       return null;
     }
 
@@ -53,12 +63,27 @@ class SearchCache {
   }
 
   set(key: string, repos: GitHubRepo[], totalCount: number): void {
-    // Evict oldest entry if at capacity
+    // At capacity: evict expired entries first, then fall back to LRU eviction
     if (this.cache.size >= MAX_CACHE_SIZE) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest) {
-        this.cache.delete(oldest);
-        this._evictions++;
+      // Try to find and evict an already-expired entry (better than evicting a valid one)
+      let evicted = false;
+      for (const [k, v] of this.cache) {
+        if (Date.now() - v.timestamp > CACHE_TTL_MS) {
+          this.cache.delete(k);
+          this._evictions++;
+          this._expiredHits++;
+          evicted = true;
+          break;
+        }
+      }
+      // No expired entries — evict LRU (oldest valid entry)
+      if (!evicted) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest) {
+          this.cache.delete(oldest);
+          this._evictions++;
+          this._capacityEvictions++;
+        }
       }
     }
 
@@ -73,12 +98,14 @@ class SearchCache {
     this.cache.clear();
   }
 
-  /** Return current cache performance metrics and reset counters. */
+  /** Return current cache performance metrics. */
   getMetrics(): CacheMetrics {
     return {
       hits: this._hits,
       misses: this._misses,
       evictions: this._evictions,
+      capacityEvictions: this._capacityEvictions,
+      expiredHits: this._expiredHits,
       size: this.cache.size,
       maxSize: MAX_CACHE_SIZE,
     };
@@ -89,6 +116,8 @@ class SearchCache {
     this._hits = 0;
     this._misses = 0;
     this._evictions = 0;
+    this._capacityEvictions = 0;
+    this._expiredHits = 0;
   }
 }
 
@@ -101,6 +130,7 @@ export function buildSearchCacheKey(params: {
   sort?: string;
   order?: string;
   perPage?: number;
+  page?: number;
 }): string {
   // Normalize query: trim + lowercase + collapse whitespace
   const normalizedQuery = params.query
@@ -115,7 +145,8 @@ export function buildSearchCacheKey(params: {
     params.minStars ?? 0,
     params.sort ?? 'stars',
     params.order ?? 'desc',
-    params.perPage ?? 30,
+    params.perPage ?? 10,
+    params.page ?? 1,
   ].join('|');
 }
 
@@ -150,6 +181,7 @@ class CriteriaCache {
     }
     if (Date.now() - entry.timestamp > CRITERIA_CACHE_TTL_MS) {
       this.cache.delete(key);
+      // Count as expired hit, not cold miss
       this._misses++;
       return null;
     }
@@ -162,9 +194,20 @@ class CriteriaCache {
 
   set(userRequest: string, criteria: SearchCriteria): void {
     const key = CriteriaCache.key(userRequest);
+    // Evict expired entries first when at capacity
     if (this.cache.size >= MAX_CRITERIA_CACHE_SIZE) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest) this.cache.delete(oldest);
+      let evicted = false;
+      for (const [k, v] of this.cache) {
+        if (Date.now() - v.timestamp > CRITERIA_CACHE_TTL_MS) {
+          this.cache.delete(k);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) {
+        const oldest = this.cache.keys().next().value;
+        if (oldest) this.cache.delete(oldest);
+      }
     }
     this.cache.set(key, { criteria, timestamp: Date.now() });
   }

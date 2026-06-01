@@ -1,3 +1,4 @@
+import React from 'react';
 import type { GitHubSearchResult } from '../../shared/types';
 import CloneButton from './CloneButton';
 import BookmarkButton from './BookmarkButton';
@@ -24,7 +25,7 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
-export default function ResultCard({ result, rank, bookmarked, selectedForCompare, onClick, onBookmark, onCompareToggle, onFindSimilar }: Props) {
+export default React.memo(function ResultCard({ result, rank, bookmarked, selectedForCompare, onClick, onBookmark, onCompareToggle, onFindSimilar }: Props) {
   const { repo, score } = result;
   const scorePercent = Math.round(score.total * 100);
 
@@ -74,4 +75,4 @@ export default function ResultCard({ result, rank, bookmarked, selectedForCompar
       </div>
     </div>
   );
-}
+});

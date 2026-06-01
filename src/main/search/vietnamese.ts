@@ -74,7 +74,18 @@ const VIETNAMESE_MARKER_WORDS = new Set([
 export function detectVietnamese(text: string): number {
   if (!text || text.trim().length === 0) return 0;
 
-  // Check for Vietnamese-specific characters (present in almost all Vietnamese text)
+  // Quick reject: check the most distinctive Vietnamese characters first.
+  // Covers ơ ư ă đ and Latin Extended Additional (ả ấ ầ etc.) — chars that
+  // almost never appear in non-Vietnamese text. This skips the full 17-regex
+  // scan for ~99% of English/other-language queries.
+  const VIET_QUICK_CHECK = /[ăơưđ\u1EA0-\u1EFF]/i;
+  if (!VIET_QUICK_CHECK.test(text)) {
+    // Also check basic accent ranges — if none, definitely not Vietnamese
+    const BASIC_ACCENT = /[\u00C0-\u00FF\u0102\u0103\u0110\u0111\u0128\u0129\u0168\u0169\u01A0\u01A1\u01AF\u01B0]/;
+    if (!BASIC_ACCENT.test(text)) return 0;
+  }
+
+  // Full scan for scoring
   let diacriticHits = 0;
   for (const range of VIETNAMESE_RANGES) {
     if (range.test(text)) diacriticHits++;
@@ -283,8 +294,10 @@ export class VietnameseQueryExpander {
     userQuery: string,
     signal?: AbortSignal,
     cache?: VietnameseTranslationCache,
+    precomputedConfidence?: number,
   ): Promise<MultilingualExpansion | null> {
-    const confidence = detectVietnamese(userQuery);
+    // Use pre-computed confidence if available to avoid redundant detectVietnamese() call
+    const confidence = precomputedConfidence ?? detectVietnamese(userQuery);
     if (confidence < 0.3) return null; // Not Vietnamese enough
 
     // Check cache first
@@ -299,9 +312,11 @@ export class VietnameseQueryExpander {
     // Phase 1: Local dictionary translation (fast, no LLM)
     const localResult = this.localTranslate(userQuery);
 
-    // Phase 2: LLM-powered translation for concepts the dictionary missed
+    // Phase 2: LLM-powered translation — skip if local dictionary has high coverage
+    // This saves ~3-10s of LLM latency for queries the dictionary fully covers.
     let llmEnhancement: { translation: string; concepts: string[]; alternatives: string[] } | null = null;
-    if (this.ollama && this.model) {
+    const localCoverage = this.computeCoverage(userQuery, localResult);
+    if (this.ollama && this.model && localCoverage < 0.8) {
       llmEnhancement = await this.llmTranslate(userQuery, signal);
     }
 
@@ -422,7 +437,7 @@ Provide an English translation and technical search terms. Return ONLY valid JSO
 JSON:`;
 
     try {
-      const raw = await this.ollama.generate(prompt, this.model, signal);
+      const raw = await this.ollama.generate(prompt, this.model, signal, 512);
       const parsed = this.parseJson<{
         englishTranslation?: string;
         technicalConcepts?: string[];
@@ -495,6 +510,24 @@ JSON:`;
     return result;
   }
 
+  /**
+   * Compute what fraction of meaningful query words were translated by the
+   * local dictionary. Returns 0-1 where 1.0 = every word was handled.
+   */
+  private computeCoverage(query: string, localResult: { translation: string; concepts: string[]; variants: string[] }): number {
+    const words = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2 && !VIETNAMESE_STOP_WORDS.has(w));
+    if (words.length === 0) return 1;
+    // Count how many original words appear (translated) in the local output
+    const translated = new Set(localResult.concepts.map(c => c.toLowerCase()));
+    const translationWords = localResult.translation.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+    for (const tw of translationWords) translated.add(tw);
+    let covered = 0;
+    for (const w of words) {
+      if (translated.has(w)) covered++;  // word was passed through (English already)
+    }
+    return covered / words.length;
+  }
+
   private parseJson<T>(raw: string): T {
     let cleaned = raw.trim();
     if (cleaned.startsWith('```')) {
@@ -545,7 +578,11 @@ export class VietnameseTranslationCache {
   }
 
   get(key: string): CachedTranslation | null {
-    const normalizedKey = VietnameseTranslationCache.key(key);
+    // Caller already normalizes via VietnameseTranslationCache.key() —
+    // skip redundant re-normalization for performance
+    const normalizedKey = key.includes(' ') || key !== key.toLowerCase()
+      ? VietnameseTranslationCache.key(key)
+      : key;  // already normalized
     const entry = this.cache.get(normalizedKey);
     if (!entry) {
       this._misses++;

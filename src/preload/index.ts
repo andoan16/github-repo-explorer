@@ -13,6 +13,9 @@ const api = {
   removeBookmark: (repoId: number) => ipcRenderer.invoke(IPC.BOOKMARKS_REMOVE, repoId),
   cloneRepo: (repoUrl: string, repoName: string) => ipcRenderer.invoke(IPC.CLONE_REPO, repoUrl, repoName),
   refine: (refinementText: string) => ipcRenderer.invoke(IPC.SEARCH_REFINE, refinementText),
+  searchMore: () => ipcRenderer.invoke(IPC.SEARCH_MORE),
+  getReadme: (owner: string, repo: string, branch: string, repoId: number) =>
+    ipcRenderer.invoke(IPC.GET_README, { owner, repo, branch, repoId }),
   generateExplanation: (repoName: string, repoDescription: string | null, requestContext: string) =>
     ipcRenderer.invoke(IPC.GENERATE_EXPLANATION, { repoName, repoDescription, requestContext }),
   onSuggestionsUpdate: (callback: (suggestions: string[]) => void) => {
@@ -21,6 +24,13 @@ const api = {
     };
     ipcRenderer.on(IPC.SUGGESTIONS_UPDATE, handler);
     return () => { ipcRenderer.removeListener(IPC.SUGGESTIONS_UPDATE, handler); };
+  },
+  onResultsUpdate: (callback: (data: { results: unknown[]; totalSearched: number; moreAvailable: boolean }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { results: unknown[]; totalSearched: number; moreAvailable: boolean }) => {
+      callback(data);
+    };
+    ipcRenderer.on(IPC.RESULTS_UPDATE, handler);
+    return () => { ipcRenderer.removeListener(IPC.RESULTS_UPDATE, handler); };
   },
 };
 

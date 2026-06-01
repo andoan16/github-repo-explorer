@@ -30,8 +30,27 @@ function computeNormalized(emphasis: WeightEmphasis): Required<WeightEmphasis> {
   return w;
 }
 
+/** Hoisted stop words — avoids allocating a new Set on every tokenize() call. */
+const STOP_WORDS = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'in', 'on', 'to', 'of', 'is', 'it', 'as', 'at', 'be', 'by']);
+
+/** Precomputed lowercase metadata per repo — avoids repeated .toLowerCase() calls in scoring. */
+interface PrecomputedRepo {
+  descLower: string;
+  fullNameLower: string;
+  topicsLower: string[];
+}
+
 export class RankingEngine {
-  scoreRepo(repo: GitHubRepo, criteria: SearchCriteria, readme: string | null, userRequest: string, emphasis?: WeightEmphasis, preTokens?: string[]): RelevanceScore {
+  scoreRepo(
+    repo: GitHubRepo,
+    criteria: SearchCriteria,
+    readme: string | null,
+    userRequest: string,
+    emphasis?: WeightEmphasis,
+    preTokens?: string[],
+    precomputedWeights?: Required<WeightEmphasis>,
+    precomputed?: PrecomputedRepo,
+  ): RelevanceScore {
     const tokens = preTokens ?? this.tokenize(criteria.keywords);
     const starsScore = this.normalizeStars(repo.stars);
     const activityScore = this.activitySignal(repo.updated_at);
@@ -41,7 +60,7 @@ export class RankingEngine {
     const readmeRelevance = (criteria.englishTranslation || criteria.technicalConcepts?.length)
       ? this.readmeSignalMultilingual(readme, tokens, criteria)
       : this.readmeSignal(readme, tokens);
-    let semanticMatch = this.baseSemanticScore(repo, criteria, tokens);
+    let semanticMatch = this.baseSemanticScore(repo, criteria, tokens, precomputed);
 
     // Credibility penalty: repos with fewer than 100 stars get their semantic
     // match discounted. Prevents keyword-stuffed micro-repos from outranking
@@ -52,7 +71,8 @@ export class RankingEngine {
       semanticMatch *= 0.85; // 15% penalty
     }
 
-    const effectiveWeights = emphasis ? computeNormalized(emphasis) : DEFAULT_WEIGHTS;
+    // Use pre-computed weights when available (computed once in rank() instead of per-repo)
+    const effectiveWeights = precomputedWeights ?? (emphasis ? computeNormalized(emphasis) : DEFAULT_WEIGHTS);
 
     const total = Math.round(
       (semanticMatch * effectiveWeights.semanticMatch +
@@ -85,10 +105,23 @@ export class RankingEngine {
     const candidates = repos.filter((r) => !r.archived);
     const tokens = this.tokenize(criteria.keywords);
 
+    // Compute normalized weights ONCE instead of per-repo
+    const precomputedWeights = emphasis ? computeNormalized(emphasis) : DEFAULT_WEIGHTS;
+
+    // Pre-compute lowercase metadata for all candidates (avoids repeated .toLowerCase() per scoring signal)
+    const precomputedMap = new Map<number, PrecomputedRepo>();
+    for (const repo of candidates) {
+      precomputedMap.set(repo.id, {
+        descLower: (repo.description ?? '').toLowerCase(),
+        fullNameLower: repo.full_name.toLowerCase(),
+        topicsLower: repo.topics.map(t => t.toLowerCase()),
+      });
+    }
+
     if (candidates.length <= maxResults) {
       const scored = candidates.map((repo) => ({
         repo,
-        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens),
+        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens, precomputedWeights, precomputedMap.get(repo.id)),
       }));
       scored.sort((a, b) => b.score.total - a.score.total);
       return scored;
@@ -96,11 +129,12 @@ export class RankingEngine {
 
     // Heap-based top-K: O(n log k) instead of O(n log n)
     const heap: { repo: GitHubRepo; score: RelevanceScore }[] = [];
-    const BATCH_SIZE = 25; // Yield event loop every 25 repos
+    // Only yield for very large datasets — 50 repos completes in microseconds
+    const BATCH_SIZE = 100;
 
     for (let i = 0; i < candidates.length; i++) {
       const repo = candidates[i];
-      const score = this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens);
+      const score = this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens, precomputedWeights, precomputedMap.get(repo.id));
       const entry = { repo, score };
 
       if (heap.length < maxResults) {
@@ -113,9 +147,8 @@ export class RankingEngine {
         siftDown(heap, 0, heap.length);
       }
 
-      // Yield event loop every batch to keep main process responsive
-      if ((i + 1) % BATCH_SIZE === 0) {
-        // Non-blocking micro-yield
+      // Yield event loop only for large datasets
+      if (BATCH_SIZE >= 100 && (i + 1) % BATCH_SIZE === 0) {
         await new Promise((r) => setImmediate(r));
       }
     }
@@ -163,12 +196,11 @@ export class RankingEngine {
   }
 
   private tokenize(keywords: string[]): string[] {
-    const stopWords = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'in', 'on', 'to', 'of', 'is', 'it', 'as', 'at', 'be', 'by']);
     const tokens = new Set<string>();
     for (const kw of keywords) {
       for (const word of kw.toLowerCase().split(/\s+/)) {
         const w = word.trim();
-        if (w.length >= 2 && !stopWords.has(w)) tokens.add(w);
+        if (w.length >= 2 && !STOP_WORDS.has(w)) tokens.add(w);
       }
     }
     return [...tokens];
@@ -209,11 +241,11 @@ export class RankingEngine {
     return Math.min(1, hits / uniqueTokens.length);
   }
 
-  private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[]): number {
+  private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[], precomputed?: PrecomputedRepo): number {
     let score = 0.3;
-    const desc = (repo.description ?? '').toLowerCase();
-    const topics = repo.topics.map((t) => t.toLowerCase());
-    const fullName = repo.full_name.toLowerCase();
+    const desc = precomputed?.descLower ?? (repo.description ?? '').toLowerCase();
+    const topics = precomputed?.topicsLower ?? repo.topics.map((t) => t.toLowerCase());
+    const fullName = precomputed?.fullNameLower ?? repo.full_name.toLowerCase();
 
     // Token-level matching (more granular, handles multi-word query strings)
     for (const token of tokens) {

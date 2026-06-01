@@ -64,6 +64,7 @@ export interface SearchParams {
   sort: 'stars' | 'updated' | 'forks';
   order: 'desc' | 'asc';
   perPage: number;
+  page?: number;
 }
 
 // ── Ranking ──
@@ -130,7 +131,39 @@ export const IPC = {
   SEARCH_REFINE: 'search:refine',
   GENERATE_EXPLANATION: 'explanation:generate',
   SUGGESTIONS_UPDATE: 'suggestions:update',
+  SEARCH_MORE: 'search:more',
+  GET_README: 'readme:get',
+  RESULTS_UPDATE: 'results:update',
 } as const;
+
+// ── Performance tracking ──
+/** Phase-level timing breakdown for search pipeline performance monitoring. */
+export interface SearchTimings {
+  totalMs: number;
+  phase: {
+    ollamaMs: number;
+    githubSearchMs: number;
+    rankingMs: number;
+    readmeFetchMs: number;
+    vietnameseMs: number;
+    mergeMs: number;
+    suggestionMs: number;
+    dedupMs: number;
+    phase1Ms: number;
+    phase2Ms: number;
+  };
+  cache: {
+    criteriaHits: number;
+    criteriaMisses: number;
+    criteriaSize: number;
+    searchHits: number;
+    searchMisses: number;
+    searchSize: number;
+    readmeHits: number;
+    readmeMisses: number;
+    readmeSize: number;
+  };
+}
 
 // ── IPC response wrappers ──
 export interface IpcResponse<T> {

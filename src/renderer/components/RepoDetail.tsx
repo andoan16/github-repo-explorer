@@ -34,14 +34,36 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark }: 
     }
   }, [repo.full_name, repo.description, matchExplanation, requestContext]);
 
+  // Lazy README fetch (not pre-fetched during search for speed)
+  const [lazyReadme, setLazyReadme] = useState<string | null>(readme);
+  const [readmeLoading, setReadmeLoading] = useState(readme === null);
+
+  useEffect(() => {
+    if (readme) {
+      setLazyReadme(readme);
+      setReadmeLoading(false);
+      return;
+    }
+    setReadmeLoading(true);
+    const [owner, name] = repo.full_name.split('/');
+    window.repoExplorer.getReadme(owner, name, repo.default_branch, repo.id)
+      .then((res) => {
+        if (res.ok && res.data) {
+          setLazyReadme((res.data as { readme: string | null }).readme);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setReadmeLoading(false));
+  }, [repo.id, repo.full_name, repo.default_branch, readme]);
+
   const readmeHtml = useMemo(() => {
-    if (!readme) return null;
+    if (!lazyReadme) return null;
     try {
-      return marked.parse(readme) as string;
+      return marked.parse(lazyReadme) as string;
     } catch {
       return null;
     }
-  }, [readme]);
+  }, [lazyReadme]);
 
   const openInBrowser = () => {
     window.open(repo.html_url, '_blank');
@@ -111,11 +133,28 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark }: 
 
         <MatchExplanation explanation={explanation} score={score} loading={explanationLoading} />
 
-        {readmeHtml && (
+        {readmeLoading && (
+          <div className="detail-readme">
+            <summary>README</summary>
+            <div className="readme-loading">
+              <span className="spinner small" />
+              <p>Loading README...</p>
+            </div>
+          </div>
+        )}
+
+        {!readmeLoading && readmeHtml && (
           <details className="detail-readme" open>
             <summary>README</summary>
             <div className="readme-content" dangerouslySetInnerHTML={{ __html: readmeHtml }} />
           </details>
+        )}
+
+        {!readmeLoading && !readmeHtml && (
+          <div className="detail-readme">
+            <summary>README</summary>
+            <p className="readme-empty">No README available for this repository.</p>
+          </div>
         )}
       </div>
     </div>

@@ -29,12 +29,39 @@ export interface ReadmeCacheMetrics {
 }
 
 const README_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_README_BYTES = 8000;
+
+/** Retry transient GitHub API 5xx errors with exponential backoff. */
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): Promise<Response> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, init);
+    if (res.status < 500 || attempt === maxRetries) return res;
+    // Exponential backoff: 500ms, 1s
+    // Respect abort signal during backoff delay
+    const delay = 500 * Math.pow(2, attempt);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, delay);
+      if (init.signal) {
+        init.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        }, { once: true });
+      }
+    });
+  }
+  // Unreachable, but satisfies TypeScript
+  throw new Error('Retry loop exited unexpectedly');
+}
 
 export class GitHubClient {
   private readonly baseUrl = 'https://api.github.com';
-  private readmeCache = new Map<number, CachedReadme>();
-  private readmeHits = 0;
-  private readmeMisses = 0;
+
+  // STATIC readme cache — shared across all GitHubClient instances so that
+  // new instances (created by getGitHubClient()) don't lose cached READMEs.
+  // This prevents duplicate API calls when Phase 1 + Phase 2 each create a client.
+  private static readmeCache = new Map<number, CachedReadme>();
+  private static readmeHits = 0;
+  private static readmeMisses = 0;
 
   constructor(private token: string) {}
 
@@ -80,9 +107,13 @@ export class GitHubClient {
     if (params.license) qParts.push(`license:${params.license}`);
 
     const q = qParts.join(' ');
-    const url = `${this.baseUrl}/search/repositories?q=${encodeURIComponent(q)}&sort=${params.sort}&order=${params.order}&per_page=${params.perPage}`;
+    let url = `${this.baseUrl}/search/repositories?q=${encodeURIComponent(q)}&sort=${params.sort}&order=${params.order}&per_page=${params.perPage}`;
+    if (params.page !== undefined && params.page > 1) {
+      url += `&page=${params.page}`;
+    }
 
-    const res = await fetch(url, this.requestInit({ signal }));
+    // Retry on 5xx transient failures (GitHub LB 502/503)
+    const res = await fetchWithRetry(url, this.requestInit({ signal }));
     const rateLimitRemaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '0', 10);
 
     if (res.status === 403) {
@@ -119,16 +150,14 @@ export class GitHubClient {
   }
 
   async getReadme(owner: string, repo: string, defaultBranch: string, repoId?: number, signal?: AbortSignal): Promise<string | null> {
-    // Check repo-ID cache first (survives across searches)
+    // Check shared static cache first (survives across searches and client instances)
     if (repoId !== undefined) {
-      const cached = this.readmeCache.get(repoId);
+      const cached = GitHubClient.readmeCache.get(repoId);
       if (cached && Date.now() - cached.timestamp < README_CACHE_TTL_MS) {
-        this.readmeHits++;
+        GitHubClient.readmeHits++;
         return cached.text;
       }
     }
-
-    this.readmeMisses++;
 
     try {
       const url = `${this.baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
@@ -137,22 +166,52 @@ export class GitHubClient {
         signal,
       };
       (opts.headers as Record<string, string>)['Accept'] = 'application/vnd.github.raw+json';
-      const res = await fetch(url, opts);
+      const res = await fetchWithRetry(url, opts);
       if (!res.ok) {
         // Cache negative result too (null) so we don't retry 404s
         if (repoId !== undefined) {
-          this.readmeCache.set(repoId, { text: null, timestamp: Date.now() });
+          GitHubClient.readmeCache.set(repoId, { text: null, timestamp: Date.now() });
         }
+        GitHubClient.readmeMisses++;
         return null;
       }
+
+      // Check Content-Length to skip excessively large READMEs before downloading
+      const contentLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+      if (contentLength > MAX_README_BYTES * 3) {
+        // README is huge — read only the portion we need
+        const reader = res.body?.getReader();
+        if (reader) {
+          let chunks = '';
+          let bytesRead = 0;
+          while (bytesRead < MAX_README_BYTES) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = new TextDecoder().decode(value, { stream: true });
+            chunks += chunk;
+            bytesRead += chunk.length;
+          }
+          reader.cancel().catch(() => {});
+          const result = chunks.length > MAX_README_BYTES
+            ? chunks.slice(0, MAX_README_BYTES) + '\n\n... (truncated)'
+            : chunks;
+          if (repoId !== undefined) {
+            GitHubClient.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
+          }
+          return result;
+        }
+      }
+
       const text = await res.text();
-      const result = text.length > 8000 ? text.slice(0, 8000) + '\n\n... (truncated)' : text;
+      const result = text.length > MAX_README_BYTES ? text.slice(0, MAX_README_BYTES) + '\n\n... (truncated)' : text;
 
       if (repoId !== undefined) {
-        this.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
+        GitHubClient.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
       }
+      GitHubClient.readmeMisses++;
       return result;
     } catch {
+      GitHubClient.readmeMisses++;
       return null;
     }
   }
@@ -160,9 +219,9 @@ export class GitHubClient {
   /** Return README cache performance metrics. */
   getReadmeCacheMetrics(): ReadmeCacheMetrics {
     return {
-      hits: this.readmeHits,
-      misses: this.readmeMisses,
-      size: this.readmeCache.size,
+      hits: GitHubClient.readmeHits,
+      misses: GitHubClient.readmeMisses,
+      size: GitHubClient.readmeCache.size,
     };
   }
 }

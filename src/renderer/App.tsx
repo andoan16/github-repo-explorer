@@ -17,7 +17,7 @@ const defaultFilters: SearchFilters = { language: null, license: null, minStars:
 export default function App() {
   const { settings, saveSettings } = useSettings();
   const { status: ollamaStatus, check: checkOllama, refreshModels } = useOllama();
-  const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, clear } = useSearch();
+  const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
   const [filters, setFilters] = useState<SearchFilters>(defaultFilters);
@@ -27,7 +27,57 @@ export default function App() {
   const [compareIds, setCompareIds] = useState<Set<number>>(new Set());
   const [githubChecked, setGithubChecked] = useState(false);
   const [githubUser, setGithubUser] = useState<string | null>(null);
-  const [visibleCount, setVisibleCount] = useState(20);
+
+  // Lazy display: show first 10, reveal more on scroll
+  const [visibleCount, setVisibleCount] = useState(10);
+  // Track whether a new user-initiated search is in progress — used to
+  // distinguish "results changed due to Phase 2 enrichment" from "results
+  // changed because user searched again". Enrichment should preserve scroll
+  // position; new search should scroll to top.
+  const isNewSearchRef = useRef(false);
+  // Saved scroll offset across Phase 2 enrichment renders
+  const savedScrollRef = useRef<number | null>(null);
+
+  // When results change, decide whether to preserve or reset scroll position
+  useEffect(() => {
+    if (isNewSearchRef.current) {
+      // User started a new search — visibleCount was already reset to 10 in
+      // handleSearch. Do NOT override scroll: let the browser naturally show
+      // the top of the new results.
+      isNewSearchRef.current = false;
+      savedScrollRef.current = null;
+      return;
+    }
+
+    // Phase 2 enrichment (or loadMore) replaced results while user is
+    // scrolled. Clamp visibleCount so we never show fewer items than we
+    // have — otherwise the DOM shrinks and the scroll jumps.
+    if (results.length > 0 && visibleCount > results.length) {
+      setVisibleCount(results.length);
+    }
+
+    // Restore scroll position that was saved before the update
+    if (savedScrollRef.current !== null) {
+      const scrollTop = savedScrollRef.current;
+      savedScrollRef.current = null;
+      // Use requestAnimationFrame so the DOM has settled after React re-render
+      requestAnimationFrame(() => {
+        window.scrollTo(0, scrollTop);
+      });
+    }
+  }, [results, visibleCount]);
+
+  // Before results are replaced by onResultsUpdate, snapshot the scroll
+  // position so we can restore it after the re-render. We do this by
+  // listening for the RESULTS_UPDATE IPC event at the App level.
+  useEffect(() => {
+    const cleanup = window.repoExplorer.onResultsUpdate(() => {
+      if (!isNewSearchRef.current) {
+        savedScrollRef.current = window.scrollY;
+      }
+    });
+    return cleanup;
+  }, []);
 
   useEffect(() => {
     checkOllama(settings.ollamaBaseUrl);
@@ -65,7 +115,9 @@ export default function App() {
     lastSearchTime.current = now;
 
     setCompareIds(new Set());
-    setVisibleCount(20);
+    isNewSearchRef.current = true;
+    setVisibleCount(10);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     execute(query, filters);
   }, [execute, filters]);
 
@@ -104,22 +156,34 @@ export default function App() {
     return results.filter((r) => compareIds.has(r.repo.id));
   }, [results, compareIds]);
 
+  // Only show items up to visibleCount
   const displayedResults = useMemo(() => results.slice(0, visibleCount), [results, visibleCount]);
-  const hasMore = visibleCount < results.length;
 
-  // IntersectionObserver sentinel for infinite scroll
+  // Infinite scroll: IntersectionObserver on a sentinel div
   const sentinelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
-    if (!hasMore) return;
+    if (!moreAvailable && visibleCount >= results.length) return;
     const el = sentinelRef.current;
     if (!el) return;
+
     const obs = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setVisibleCount((c) => c + 20); },
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+
+        if (visibleCount < results.length) {
+          // We have more items in cache — just reveal them
+          setVisibleCount((c) => c + 10);
+        } else if (moreAvailable && !loadingMore) {
+          // Need to fetch more from backend
+          loadMore();
+        }
+      },
       { threshold: 0.1 },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [hasMore, visibleCount]);
+  }, [visibleCount, results.length, moreAvailable, loadingMore, loadMore]);
 
   const readOnly = !ollamaStatus.connected;
 
@@ -180,7 +244,7 @@ export default function App() {
           <>
             <div className="results-summary">
               <span>
-                Found {results.length} repos out of {totalSearched.toLocaleString()} searched
+                Showing {displayedResults.length} of {totalSearched.toLocaleString()} repos
               </span>
               <div className="results-toolbar">
                 {compareIds.size >= 2 && (
@@ -245,7 +309,18 @@ export default function App() {
                 />
               ))}
             </div>
-            {hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
+            {/* Sentinel for infinite scroll — triggers reveal or fetch */}
+            {(visibleCount < results.length || moreAvailable) && (
+              <>
+                <div ref={sentinelRef} style={{ height: 1 }} />
+                {loadingMore && (
+                  <div className="loading-state">
+                    <span className="spinner small" />
+                    <p>Loading more...</p>
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
 
