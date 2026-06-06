@@ -7,10 +7,8 @@ interface Props {
   result: GitHubSearchResult;
   rank: number;
   bookmarked: boolean;
-  selectedForCompare: boolean;
   onClick: () => void;
   onBookmark: (e: React.MouseEvent) => void;
-  onCompareToggle: (id: number) => void;
   onFindSimilar: () => void;
 }
 
@@ -25,21 +23,13 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(months / 12)}y ago`;
 }
 
-export default React.memo(function ResultCard({ result, rank, bookmarked, selectedForCompare, onClick, onBookmark, onCompareToggle, onFindSimilar }: Props) {
+export default React.memo(function ResultCard({ result, rank, bookmarked, onClick, onBookmark, onFindSimilar }: Props) {
   const { repo, score } = result;
   const scorePercent = Math.round(score.total * 100);
 
   return (
     <div className="result-card">
       <div className="result-rank">
-        <label className="compare-check" onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={selectedForCompare}
-            onChange={() => onCompareToggle(repo.id)}
-            title="Select to compare"
-          />
-        </label>
         <span>#{rank}</span>
       </div>
       <div className="result-body" onClick={onClick} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onClick()}>

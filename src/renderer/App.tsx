@@ -5,7 +5,6 @@ import ResultCard from './components/ResultCard';
 import RepoDetail from './components/RepoDetail';
 import Settings from './components/Settings';
 import BookmarksPanel from './components/BookmarksPanel';
-import ComparisonView from './components/ComparisonView';
 import { useSettings } from './hooks/useSettings';
 import { useOllama } from './hooks/useOllama';
 import { useSearch } from './hooks/useSearch';
@@ -52,8 +51,6 @@ export default function App() {
   const [appliedFilters, setAppliedFilters] = useState<SearchFilters>(defaultFilters);
   const [showSettings, setShowSettings] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
-  const [showComparison, setShowComparison] = useState(false);
-  const [compareIds, setCompareIds] = useState<Set<number>>(new Set());
   const [githubChecked, setGithubChecked] = useState(false);
   const [githubUser, setGithubUser] = useState<string | null>(null);
 
@@ -116,7 +113,6 @@ export default function App() {
 
     setLastQuery(query);
     setAppliedFilters(filters);
-    setCompareIds(new Set());
     isNewSearchRef.current = true;
     setVisibleCount(10);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -133,7 +129,6 @@ export default function App() {
   const handleApplyFilters = useCallback(() => {
     if (!lastQuery) return;
     setAppliedFilters(filters);
-    setCompareIds(new Set());
     isNewSearchRef.current = true;
     setVisibleCount(10);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -151,14 +146,6 @@ export default function App() {
     toggleBookmark({ repo: result.repo, savedAt: new Date().toISOString() });
   }, [toggleBookmark]);
 
-  const handleCompareToggle = useCallback((id: number) => {
-    setCompareIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
   const handleSelectBookmarked = useCallback((bookmark: Bookmark) => {
     setShowBookmarks(false);
     // Show the bookmarked repo in the detail view using a synthetic result
@@ -170,10 +157,6 @@ export default function App() {
     };
     setSelectedResult(synthetic);
   }, [setSelectedResult]);
-
-  const compareResults = useMemo(() => {
-    return results.filter((r) => compareIds.has(r.repo.id));
-  }, [results, compareIds]);
 
   // Only show items up to visibleCount
   const displayedResults = useMemo(() => results.slice(0, visibleCount), [results, visibleCount]);
@@ -265,13 +248,6 @@ export default function App() {
               <span>
                 Showing {displayedResults.length} of {totalSearched.toLocaleString()} repos
               </span>
-              <div className="results-toolbar">
-                {compareIds.size >= 2 && (
-                  <button className="btn-secondary" onClick={() => setShowComparison(true)}>
-                    Compare ({compareIds.size})
-                  </button>
-                )}
-              </div>
             </div>
             {suggestions.length > 0 && (
               <div className="suggestions-row">
@@ -320,10 +296,8 @@ export default function App() {
                   result={r}
                   rank={i + 1}
                   bookmarked={isBookmarked(r.repo.id)}
-                  selectedForCompare={compareIds.has(r.repo.id)}
                   onClick={() => setSelectedResult(r)}
                   onBookmark={(e) => handleBookmark(e, r)}
-                  onCompareToggle={handleCompareToggle}
                   onFindSimilar={() => handleFindSimilar(r)}
                 />
               ))}
@@ -397,13 +371,6 @@ export default function App() {
           onSelect={handleSelectBookmarked}
           onRemove={(id) => removeBookmark(id)}
           onClose={() => setShowBookmarks(false)}
-        />
-      )}
-
-      {showComparison && (
-        <ComparisonView
-          results={compareResults}
-          onClose={() => setShowComparison(false)}
         />
       )}
 

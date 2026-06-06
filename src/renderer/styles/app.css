@@ -277,9 +277,6 @@ body {
   font-size: 12px; font-weight: 600; color: var(--text-placeholder);
   min-width: 28px; padding-top: 3px;
 }
-.compare-check input[type=checkbox] {
-  width: 14px; height: 14px; cursor: pointer; accent-color: var(--accent);
-}
 .result-body { flex: 1; min-width: 0; cursor: pointer; }
 .result-actions {
   display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -596,29 +593,6 @@ body {
   background: transparent; color: var(--text-placeholder); cursor: pointer; transition: all 0.15s;
 }
 .bookmark-remove-btn:hover { background: var(--error-subtle); border-color: var(--error); color: var(--error); }
-
-/* ── Comparison View ── */
-.comparison-panel {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); width: 100%; max-width: 960px;
-  padding: 20px; box-shadow: var(--shadow-lg);
-  max-height: calc(100vh - 48px); display: flex; flex-direction: column;
-}
-.comparison-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.comparison-header h2 { font-size: 18px; font-weight: 600; }
-.comparison-scroll { overflow: auto; }
-.comparison-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.comparison-table th, .comparison-table td {
-  border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top;
-}
-.comparison-table th {
-  background: var(--bg-secondary); font-weight: 600; white-space: nowrap;
-}
-.comparison-table th a { color: var(--accent); text-decoration: none; }
-.comparison-table th a:hover { text-decoration: underline; }
-.comparison-table thead th:first-child { width: 120px; }
-.comp-label { font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary); white-space: nowrap; }
-.comp-reason { font-size: 12px; color: var(--text-secondary); font-style: italic; line-height: 1.5; }
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
