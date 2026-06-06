@@ -9,8 +9,6 @@ interface SearchState {
   error: string | null;
   suggestions: string[];
   moreAvailable: boolean;
-  /** True while background LLM enrichment is in progress */
-  enriching: boolean;
   /** True while loading-more pagination is in progress (does NOT hide results) */
   loadingMore: boolean;
 }
@@ -73,7 +71,6 @@ export function useSearch() {
     error: null,
     suggestions: [],
     moreAvailable: false,
-    enriching: false,
     loadingMore: false,
   });
 
@@ -82,20 +79,7 @@ export function useSearch() {
   const appliedRefinements = useRef(new Set<string>());
   const currentGenRef = useRef(0);
 
-  // Listen for async enriched results from backend
-  useEffect(() => {
-    const cleanup = window.repoExplorer.onResultsUpdate((data: { results: GitHubSearchResult[]; totalSearched: number; moreAvailable: boolean }) => {
-      setState(s => ({
-        ...s,
-        results: data.results,
-        totalSearched: data.totalSearched,
-        moreAvailable: data.moreAvailable,
-        enriching: false,
-      }));
-    });
-    return cleanup;
-  }, []);
-
+  // Listen for async suggestion updates from backend (suggestions are still fire-and-forget)
   useEffect(() => {
     const cleanup = window.repoExplorer.onSuggestionsUpdate((suggestions: string[]) => {
       setState(s => ({
@@ -120,7 +104,6 @@ export function useSearch() {
       error: null,
       suggestions: [],
       moreAvailable: false,
-      enriching: false,
       loadingMore: false,
     });
     setSelectedResult(null);
@@ -135,9 +118,8 @@ export function useSearch() {
         results: data.results,
         totalSearched: data.totalSearched,
         error: null,
-        moreAvailable: true, // more will come from async enrichment
+        moreAvailable: true,
         suggestions: [],
-        enriching: true, // background LLM is now running
         loadingMore: false,
       });
     } else {
@@ -149,7 +131,6 @@ export function useSearch() {
         error: res.error ?? 'Unknown error',
         suggestions: [],
         moreAvailable: false,
-        enriching: false,
         loadingMore: false,
       });
     }
@@ -168,7 +149,6 @@ export function useSearch() {
       error: null,
       suggestions: [],
       moreAvailable: false,
-      enriching: false,
       loadingMore: false,
     });
     setSelectedResult(null);
@@ -185,7 +165,6 @@ export function useSearch() {
         error: null,
         suggestions: [],
         moreAvailable: false,
-        enriching: false,
         loadingMore: false,
       });
     } else {
@@ -197,7 +176,6 @@ export function useSearch() {
         error: res.error ?? 'Unknown error during refinement',
         suggestions: [],
         moreAvailable: false,
-        enriching: false,
         loadingMore: false,
       });
     }
@@ -237,7 +215,6 @@ export function useSearch() {
       error: null,
       suggestions: [],
       moreAvailable: false,
-      enriching: false,
       loadingMore: false,
     });
     setSelectedResult(null);

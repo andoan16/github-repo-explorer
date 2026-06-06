@@ -20,7 +20,36 @@ export default function App() {
   const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
+  // Apply theme based on settings (also persist to localStorage for FOUC prevention)
+  useEffect(() => {
+    const resolveTheme = (theme: 'light' | 'dark' | 'system'): 'light' | 'dark' | null => {
+      if (theme === 'system') {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      return theme;
+    };
+    const applyTheme = () => {
+      const resolved = resolveTheme(settings.theme);
+      if (resolved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      } else {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    };
+    applyTheme();
+    try { localStorage.setItem('repo-explorer-theme', settings.theme); } catch {}
+
+    // Listen for system preference changes when theme is 'system'
+    if (settings.theme === 'system') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      mq.addEventListener('change', applyTheme);
+      return () => mq.removeEventListener('change', applyTheme);
+    }
+  }, [settings.theme]);
+
   const [filters, setFilters] = useState<SearchFilters>(defaultFilters);
+  const [lastQuery, setLastQuery] = useState<string | null>(null);
+  const [appliedFilters, setAppliedFilters] = useState<SearchFilters>(defaultFilters);
   const [showSettings, setShowSettings] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showComparison, setShowComparison] = useState(false);
@@ -32,52 +61,23 @@ export default function App() {
   const [visibleCount, setVisibleCount] = useState(10);
   // Track whether a new user-initiated search is in progress — used to
   // distinguish "results changed due to Phase 2 enrichment" from "results
-  // changed because user searched again". Enrichment should preserve scroll
-  // position; new search should scroll to top.
+  // When results change due to a new search, scroll to top.
+  // When results change due to loadMore (more items appended), preserve position.
   const isNewSearchRef = useRef(false);
-  // Saved scroll offset across Phase 2 enrichment renders
-  const savedScrollRef = useRef<number | null>(null);
 
-  // When results change, decide whether to preserve or reset scroll position
   useEffect(() => {
     if (isNewSearchRef.current) {
-      // User started a new search — visibleCount was already reset to 10 in
-      // handleSearch. Do NOT override scroll: let the browser naturally show
-      // the top of the new results.
       isNewSearchRef.current = false;
-      savedScrollRef.current = null;
       return;
     }
 
-    // Phase 2 enrichment (or loadMore) replaced results while user is
-    // scrolled. Clamp visibleCount so we never show fewer items than we
-    // have — otherwise the DOM shrinks and the scroll jumps.
+    // loadMore or other non-search result change: clamp visibleCount so we
+    // never show fewer items than we have — otherwise the DOM shrinks and
+    // the scroll jumps.
     if (results.length > 0 && visibleCount > results.length) {
       setVisibleCount(results.length);
     }
-
-    // Restore scroll position that was saved before the update
-    if (savedScrollRef.current !== null) {
-      const scrollTop = savedScrollRef.current;
-      savedScrollRef.current = null;
-      // Use requestAnimationFrame so the DOM has settled after React re-render
-      requestAnimationFrame(() => {
-        window.scrollTo(0, scrollTop);
-      });
-    }
   }, [results, visibleCount]);
-
-  // Before results are replaced by onResultsUpdate, snapshot the scroll
-  // position so we can restore it after the re-render. We do this by
-  // listening for the RESULTS_UPDATE IPC event at the App level.
-  useEffect(() => {
-    const cleanup = window.repoExplorer.onResultsUpdate(() => {
-      if (!isNewSearchRef.current) {
-        savedScrollRef.current = window.scrollY;
-      }
-    });
-    return cleanup;
-  }, []);
 
   useEffect(() => {
     checkOllama(settings.ollamaBaseUrl);
@@ -114,12 +114,31 @@ export default function App() {
     if (now - lastSearchTime.current < DEBOUNCE_MS) return;
     lastSearchTime.current = now;
 
+    setLastQuery(query);
+    setAppliedFilters(filters);
     setCompareIds(new Set());
     isNewSearchRef.current = true;
     setVisibleCount(10);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     execute(query, filters);
   }, [execute, filters]);
+
+  const filtersChanged = hasSearched && lastQuery !== null && (
+    filters.language !== appliedFilters.language ||
+    filters.license !== appliedFilters.license ||
+    filters.minStars !== appliedFilters.minStars ||
+    filters.maxAgeMonths !== appliedFilters.maxAgeMonths
+  );
+
+  const handleApplyFilters = useCallback(() => {
+    if (!lastQuery) return;
+    setAppliedFilters(filters);
+    setCompareIds(new Set());
+    isNewSearchRef.current = true;
+    setVisibleCount(10);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    execute(lastQuery, filters);
+  }, [execute, filters, lastQuery]);
 
   const handleFindSimilar = useCallback((result: GitHubSearchResult) => {
     const parts = [...result.repo.topics, result.repo.description].filter(Boolean);
@@ -218,7 +237,7 @@ export default function App() {
       <main className="app-main">
         <div className="search-section">
           <SearchBar onSearch={handleSearch} searching={searching} disabled={readOnly} />
-          <Filters filters={filters} onChange={setFilters} disabled={searching} />
+          <Filters filters={filters} onChange={setFilters} disabled={searching} filtersChanged={filtersChanged} onApply={handleApplyFilters} />
         </div>
 
         {error && (

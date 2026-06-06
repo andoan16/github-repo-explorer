@@ -7,6 +7,43 @@ import BookmarkButton from './BookmarkButton';
 
 marked.setOptions({ breaks: true, gfm: true });
 
+/**
+ * Rewrite relative image URLs in Markdown to absolute GitHub raw URLs.
+ * READMEs often contain relative paths like `./images/logo.png` or `docs/img/badge.svg`
+ * which resolve against the Electron renderer's local origin instead of the repo.
+ * Without rewriting, these images 404.
+ */
+function rewriteRelativeImageUrls(markdown: string, owner: string, repo: string, branch: string): string {
+  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`;
+  // Match markdown images: ![alt](url)  — capture the URL portion
+  return markdown.replace(
+    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    (match, alt, url) => {
+      // Don't rewrite absolute URLs (http/https) or data URIs or anchor-only links
+      if (/^(https?:\/\/|data:|#)/i.test(url)) return match;
+      // Strip leading ./ from relative paths
+      const cleanUrl = url.replace(/^\.\//, '');
+      return `![${alt}](${baseUrl}/${cleanUrl})`;
+    },
+  );
+}
+
+/**
+ * Rewrite relative src attributes in HTML <img> tags to absolute GitHub raw URLs.
+ * Handles bare HTML images embedded in Markdown (e.g., <img src="./logo.png">).
+ */
+function rewriteRelativeHtmlImgSrcs(html: string, owner: string, repo: string, branch: string): string {
+  const baseUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`;
+  return html.replace(
+    /(<img\s[^>]*src=["'])([^"']+)(["'][^>]*>)/gi,
+    (match, prefix, src, suffix) => {
+      if (/^(https?:\/\/|data:|#|\/\/)/i.test(src)) return match;
+      const cleanSrc = src.replace(/^\.\//, '');
+      return `${prefix}${baseUrl}/${cleanSrc}${suffix}`;
+    },
+  );
+}
+
 interface Props {
   result: GitHubSearchResult;
   bookmarked: boolean;
@@ -59,11 +96,14 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark }: 
   const readmeHtml = useMemo(() => {
     if (!lazyReadme) return null;
     try {
-      return marked.parse(lazyReadme) as string;
+      const [owner, name] = repo.full_name.split('/');
+      const rewritten = rewriteRelativeImageUrls(lazyReadme, owner, name, repo.default_branch);
+      const parsed = marked.parse(rewritten) as string;
+      return rewriteRelativeHtmlImgSrcs(parsed, owner, name, repo.default_branch);
     } catch {
       return null;
     }
-  }, [lazyReadme]);
+  }, [lazyReadme, repo.full_name, repo.default_branch]);
 
   const openInBrowser = () => {
     window.open(repo.html_url, '_blank');

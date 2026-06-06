@@ -29,7 +29,10 @@ const GENERIC_WORDS = new Set([
   'open', 'source', 'code', 'show', 'work', 'help', 'please', 'just',
   'also', 'would', 'could', 'should', 'one', 'any', 'all', 'some', 'many',
   'server', 'support', 'dashboard', 'with', 'type', 'based',
-  'ci', 'cd', 'cicd', 'api', 'sdk', 'cli', 'ui', 'gui',
+  // NOTE: 'ci', 'cd', 'cicd' were previously here but removed — they are domain-specific
+  // terms that should be checked for presence/absence in negative-space mining.
+  // Keeping them generic meant the miner couldn't detect CI/CD underrepresentation.
+  'api', 'sdk', 'cli', 'ui', 'gui',
   'data', 'app', 'apps', 'web', 'tool', 'tools', 'service', 'services',
   'new', 'old', 'simple', 'easy', 'fast', 'small', 'large',
 ]);
@@ -43,6 +46,9 @@ const QUALIFIER_PATTERNS = [
   /high[-\s]?performance/gi, /low[-\s]?latency/gi,
   /lightweight/gi, /minimal/gi, /production[-\s]?ready/gi,
   /enterprise[-\s]?(?:-grade)?/gi, /open[-\s]?source/gi,
+  // CI/CD qualifier patterns — match as phrase units so "ci/cd" and "continuous integration"
+  // are treated as indivisible intent claims, not stripped by generic-word filtering
+  /ci[-\/\s]?cd/gi, /continuous[-\s]?(?:integration|delivery|deployment)/gi,
 ];
 
 /**

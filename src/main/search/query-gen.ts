@@ -2,7 +2,7 @@ import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/
 import type { OllamaClient } from '../ollama/client';
 import type { GitHubRepo } from '../../shared/types';
 import { computeResultStatistics, mineNegativeSpace } from './result-stats';
-import { detectVietnamese } from './vietnamese';  // kept for default fallback when precomputedIsVietnamese is not provided
+import { detectVietnamese, extractTechTerms, expandGithubSynonyms, classifyVietnameseIntent, normalizeDiacritics } from './vietnamese';
 
 const INTENT_ANGLES: Record<string, string> = {
   'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
@@ -16,6 +16,15 @@ const INTENT_ANGLES: Record<string, string> = {
   'database': 'Prioritize suggestions about storage model, scalability, query language, and cloud vs embedded.',
   'networking-tool': 'Prioritize suggestions about protocol support, throughput, security features, and agent vs agentless.',
   'security-tool': 'Prioritize suggestions about attack surface, compliance standards, integration model, and automation capability.',
+  'password-manager': 'Prioritize suggestions about encryption at rest, browser extension, sync model, and multi-device support.',
+  'self-hosted': 'Prioritize suggestions about deployment method, Docker support, resource requirements, and data ownership.',
+  'authentication': 'Prioritize suggestions about protocol support (OAuth2/OIDC/SAML), MFA, session management, and integration with existing identity providers.',
+  'messaging': 'Prioritize suggestions about protocol support (Matrix/XMPP/IRC), encryption, federation, and bridging capabilities.',
+  'monitoring': 'Prioritize suggestions about data collection method, alerting support, dashboarding, and integration ecosystem.',
+  'containerization': 'Prioritize suggestions about container runtime, orchestration support, image management, and resource isolation.',
+  'testing': 'Prioritize suggestions about test framework support, CI integration, coverage reporting, and language bindings.',
+  'automation': 'Prioritize suggestions about trigger types, workflow complexity, error handling, and integration count.',
+  'web-framework': 'Prioritize suggestions about rendering model (SSR/SSG/SPA), bundle size, plugin ecosystem, and TypeScript support.',
 };
 
 export class QueryGenerator {
@@ -26,7 +35,7 @@ export class QueryGenerator {
     const isVietnamese = precomputedIsVietnamese ?? (detectVietnamese(userDescription) >= 0.3);
 
     const multilingualInstruction = isVietnamese
-      ? `\n\nVietnamese input. Translate to English for searchQueries. Map: giám sát→monitoring, máy chủ→server, quản lý mật khẩu→password manager, tự host→self-hosted, mã nguồn mở→open source, giấy phép→license. Include englishTranslation + technicalConcepts fields.`
+      ? `\n\nVietnamese input. Translate EVERY Vietnamese word to English for searchQueries. Common map: giám sát→monitoring, máy chủ→server, máy tính→computer, quản lý→manage/admin, quản lý mật khẩu→password manager, tự host→self-hosted, mã nguồn mở→open source, giấy phép→license, cơ sở dữ liệu→database, bảo mật→security, phát triển→development, triển khai→deploy, thư viện→library, ứng dụng→app/application, giao diện→interface, nhúng→embedded, nhẹ→lightweight, nhanh→fast, an toàn→safe/secure, ổn định→stable, phổ biến→popular, xử lý→process/handle, tìm kiếm→search, phân tích→analysis, tự động→automated, học máy→ml, trí tuệ nhân tạo→ai, học sâu→deep learning, thị giác máy tính→computer vision, xử lý ngôn ngữ tự nhiên→nlp, kho dữ liệu→data warehouse, tích hợp liên tục→ci, phân tích log→log analysis, hệ thống phân tán→distributed system, lưu trữ→storage, bộ nhớ→memory, điều phối→orchestration, hạ tầng→infrastructure. Include englishTranslation + technicalConcepts fields. Use concise 2-4 word English search phrases.`
       : '';
 
     const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${multilingualInstruction}
@@ -89,6 +98,66 @@ JSON:`;
     }
     if (technicalConcepts.length > 0) {
       expandedKeywords.push(...technicalConcepts.slice(0, 5));
+    }
+
+    // ── Local Vietnamese enrichment (no LLM call) ──
+    // Even when the LLM produces a translation, deterministic tech terms and
+    // synonym expansions broaden recall without extra API calls.
+    if (isVietnamese) {
+      // Tech terms: extract canonical English terms from the original Vietnamese query
+      const localTechTerms = extractTechTerms(userDescription);
+      for (const t of localTechTerms) {
+        if (!technicalConcepts.includes(t)) technicalConcepts.push(t);
+      }
+
+      // Synonym expansion: Vietnamese phrases → GitHub-friendly English synonyms
+      const translatedParts = englishTranslation
+        ? englishTranslation.split(/\s+/)
+        : [];
+      const localSynonyms = expandGithubSynonyms(userDescription.toLowerCase(), translatedParts);
+      for (const s of localSynonyms) {
+        if (!expandedKeywords.includes(s)) expandedKeywords.push(s);
+      }
+
+      // Deterministic intent: pattern-match Vietnamese phrasing → intent slug
+      // Only use when the LLM didn't produce a useful intent
+      if (!criteria.intent || criteria.intent === 'other') {
+        const localIntent = classifyVietnameseIntent(userDescription);
+        if (localIntent) criteria.intent = localIntent;
+      }
+
+      // ── Deterministic query slot: inject tech-concepts as a search query ──
+      // The LLM sometimes produces vague translations. If we extracted specific
+      // tech concepts (e.g., "docker", "ci-cd"), construct a concise 2-4 word
+      // query from them and replace/supplement the weakest LLM query.
+      // This fills at most 1 keyword slot — no extra GitHub API calls.
+      if (technicalConcepts.length >= 2 && queries.length < 3) {
+        const conceptQuery = technicalConcepts.slice(0, 3).join(' ');
+        // Only add if meaningfully different from existing queries
+        const isDuplicate = queries.some(q =>
+          levenshteinSimilarity(q.toLowerCase().replace(/[^\w\s]/g, ''), conceptQuery.toLowerCase().replace(/[^\w\s]/g, '')) > 0.6
+        );
+        if (!isDuplicate) {
+          queries.push(conceptQuery);
+        }
+      } else if (technicalConcepts.length >= 2 && queries.length >= 3) {
+        // All 3 slots are full — replace the worst LLM query if a concept
+        // query is more specific. Heuristic: prefer concept query over the
+        // shortest existing query (shortest = most likely to be vague).
+        const conceptQuery = technicalConcepts.slice(0, 3).join(' ');
+        const isDuplicate = queries.some(q =>
+          levenshteinSimilarity(q.toLowerCase().replace(/[^\w\s]/g, ''), conceptQuery.toLowerCase().replace(/[^\w\s]/g, '')) > 0.6
+        );
+        if (!isDuplicate) {
+          // Find the shortest query (least specific) and replace it
+          const shortestIdx = queries.reduce((minIdx, q, i) =>
+            q.length < queries[minIdx].length ? i : minIdx, 0);
+          // Only replace if concept query is longer than the shortest
+          if (conceptQuery.length > queries[shortestIdx].length) {
+            queries[shortestIdx] = conceptQuery;
+          }
+        }
+      }
     }
 
     return {
@@ -157,6 +226,88 @@ JSON:`;
       }
     }
 
+    // ── Vietnamese diacritics-stripped search variants ──
+    // GitHub's search index handles diacritics inconsistently. A Vietnamese
+    // query like "quản lý" should also match repos with "quan-ly" or "quan ly"
+    // in name/description (common in Vietnamese GitHub repos). We derive
+    // diacritics-stripped variants from originalQuery (the Vietnamese text),
+    // not from keywords (which are English). No extra API calls.
+    if (criteria.originalQuery && detectVietnamese(criteria.originalQuery) >= 0.3) {
+      const originalLower = criteria.originalQuery.toLowerCase();
+      // Split Vietnamese query into meaningful chunks and strip diacritics
+      // e.g., "quản lý mật khẩu" → ["quan", "ly", "mat", "khau"] → queries
+      const viWords = originalLower.split(/[\s,;.!?(){}[\]]+/).filter(w => w.length >= 3);
+      if (viWords.length >= 2) {
+        // Full-query slug: "quản lý mật khẩu" → "quan-ly-mat-khau"
+        const fullSlug = normalizeDiacritics(originalLower.replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF]/g, '').trim()).replace(/\s+/g, '-');
+        const isDuplicate = baseParams.some((p) => {
+          const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
+          return levenshteinSimilarity(n, fullSlug) > 0.7;
+        });
+        if (!isDuplicate && fullSlug.length >= 4) {
+          baseParams.push({
+            query: fullSlug,
+            language: filters?.language ?? undefined,
+            minStars: filters?.minStars ?? criteria.minStars,
+            license: filters?.license ?? criteria.preferredLicense ?? undefined,
+            sort: 'stars' as const,
+            order: 'desc' as const,
+            perPage: 10,
+          });
+        }
+
+        // Also try the most meaningful 2-3 word sub-phrases stripped
+        // e.g., "quản lý mật khẩu" → "quan-ly-mat" and "ly-mat-khau"
+        // This catches repos named after sub-phrases
+        const strippedWords = viWords.map(w => normalizeDiacritics(w).toLowerCase().replace(/[^\w-]/g, ''));
+        for (let start = 0; start < strippedWords.length - 1; start++) {
+          const chunk = strippedWords.slice(start, start + 3).join('-');
+          if (chunk.length >= 4) {
+            const isChunkDupe = baseParams.some((p) => {
+              const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
+              return levenshteinSimilarity(n, chunk) > 0.7;
+            });
+            if (!isChunkDupe) {
+              baseParams.push({
+                query: chunk,
+                language: filters?.language ?? undefined,
+                minStars: filters?.minStars ?? criteria.minStars,
+                license: filters?.license ?? criteria.preferredLicense ?? undefined,
+                sort: 'stars' as const,
+                order: 'desc' as const,
+                perPage: 10,
+              });
+            }
+          }
+        }
+      }
+
+      // Also strip diacritics from any keywords that happen to contain Vietnamese
+      // (edge case: LLM might include Vietnamese in keywords)
+      for (const kw of criteria.keywords) {
+        const stripped = normalizeDiacritics(kw).toLowerCase().replace(/[^\w\s-]/g, '').trim();
+        if (stripped && stripped !== kw.toLowerCase() && stripped.length >= 3) {
+          const hyphenated = stripped.replace(/\s+/g, '-');
+          const isDuplicate = baseParams.some((p) => {
+            const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
+            return n === stripped || n === hyphenated ||
+              levenshteinSimilarity(n, stripped) > 0.7;
+          });
+          if (!isDuplicate) {
+            baseParams.push({
+              query: hyphenated.length >= stripped.length ? hyphenated : stripped,
+              language: filters?.language ?? undefined,
+              minStars: filters?.minStars ?? criteria.minStars,
+              license: filters?.license ?? criteria.preferredLicense ?? undefined,
+              sort: 'stars' as const,
+              order: 'desc' as const,
+              perPage: 10,
+            });
+          }
+        }
+      }
+    }
+
     return baseParams;
   }
 
@@ -219,7 +370,7 @@ ${topRepos.map((r, i) => `${i + 1}. ${r.full_name} (★${r.stars.toLocaleString(
     // ── Negative-space warning ──
     let negSpaceBlock = '';
     if (negSpace.gaps.length > 0) {
-      negSpaceBlock = `Missing from results: ${negSpace.gaps.slice(0, 5).join(', ')}. Suggest broader terms for these gaps.`;
+      negSpaceBlock = `Missing from results: ${negSpace.gaps.slice(0, 5).map(g => `${g.keyword} (${g.presence}%)`).join(', ')}. Suggest broader terms for these gaps.`;
     }
 
     const prompt = `You are a GitHub search expert. A user searched GitHub and received ${resultCount} results. Suggest 3-6 natural-language refinement phrases they could use to narrow or refocus their results.

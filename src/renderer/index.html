@@ -3,10 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://raw.githubusercontent.com https://camo.githubusercontent.com https://avatars.githubusercontent.com https://github.com https://*.githubusercontent.com; connect-src 'self' http://localhost:*;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:;" />
     <title>Repo Explorer</title>
   </head>
   <body>
+    <script>
+      // Prevent FOUC: apply theme before React renders
+      (function() {
+        try {
+          var raw = localStorage.getItem('repo-explorer-theme');
+          var theme = raw || 'system';
+          var isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+        } catch(e) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
   </body>

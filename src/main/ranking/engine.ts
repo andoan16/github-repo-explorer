@@ -1,5 +1,6 @@
 import type { GitHubRepo, RelevanceScore, WeightEmphasis } from '../../shared/types';
 import type { SearchCriteria } from '../../shared/types';
+import { normalizeDiacritics } from '../search/vietnamese';
 
 /** Precomputed default weights — avoids per-repo allocation on every score call. */
 const DEFAULT_WEIGHTS: Required<WeightEmphasis> = {
@@ -32,6 +33,14 @@ function computeNormalized(emphasis: WeightEmphasis): Required<WeightEmphasis> {
 
 /** Hoisted stop words — avoids allocating a new Set on every tokenize() call. */
 const STOP_WORDS = new Set(['a', 'an', 'the', 'and', 'or', 'for', 'with', 'in', 'on', 'to', 'of', 'is', 'it', 'as', 'at', 'be', 'by']);
+
+/** Vietnamese stop words for use in original-query token matching. */
+const VIET_STOP_WORDS = new Set([
+  'tôi', 'muốn', 'cần', 'một', 'cho', 'và', 'hoặc', 'của', 'về', 'với',
+  'để', 'sẽ', 'đã', 'đang', 'cũng', 'này', 'đó', 'có', 'không', 'nhưng',
+  'từ', 'trong', 'ra', 'vào', 'lên', 'xuống', 'nữa', 'rất', 'quá',
+  'cái', 'những', 'các', 'vậy', 'thì', 'mà', 'nhé', 'ạ',
+]);
 
 /** Precomputed lowercase metadata per repo — avoids repeated .toLowerCase() calls in scoring. */
 interface PrecomputedRepo {
@@ -178,8 +187,17 @@ export class RankingEngine {
     if (!repoLanguage || wantedTechs.length === 0) return 0.5;
     const langLower = repoLanguage.toLowerCase();
     for (const tech of wantedTechs) {
-      if (langLower === tech.toLowerCase()) return 1;
-      if (langLower.includes(tech.toLowerCase()) || tech.toLowerCase().includes(langLower)) return 0.7;
+      const techLower = tech.toLowerCase();
+      if (langLower === techLower) return 1;
+      // Partial match: only score 0.7 if both are at least 3 chars and one
+      // is a genuine prefix/suffix match (not a false positive like "script" ⊂ "typescript").
+      // Use word-boundary check: the match must start after a non-alpha char or at position 0.
+      if (techLower.length >= 3) {
+        const idx = langLower.indexOf(techLower);
+        if (idx !== -1 && (idx === 0 || !/[a-z]/.test(langLower[idx - 1]))) return 0.7;
+        const rIdx = techLower.indexOf(langLower);
+        if (rIdx !== -1 && (rIdx === 0 || !/[a-z]/.test(techLower[rIdx - 1]))) return 0.7;
+      }
     }
     return 0.2;
   }
@@ -207,7 +225,7 @@ export class RankingEngine {
   }
 
   private readmeSignal(readme: string | null, tokens: string[]): number {
-    if (!readme || tokens.length === 0) return 0.5;
+    if (!readme || tokens.length === 0) return 0;
     const text = readme.toLowerCase();
     let hits = 0;
     for (const t of tokens) {
@@ -221,7 +239,10 @@ export class RankingEngine {
    * Same as readmeSignal but also checks translated tokens.
    */
   readmeSignalMultilingual(readme: string | null, tokens: string[], criteria: SearchCriteria): number {
-    if (!readme || tokens.length === 0) return 0.5;
+    // When readme is null/empty, we have no signal — return 0 (neutral) instead of 0.5.
+    // Returning 0.5 for null readmes was inflating scores for repos whose readmes
+    // we haven't even loaded yet.
+    if (!readme || tokens.length === 0) return 0;
     const text = readme.toLowerCase();
     let hits = 0;
     const allTokens = [...tokens];
@@ -240,6 +261,32 @@ export class RankingEngine {
     }
     return Math.min(1, hits / uniqueTokens.length);
   }
+
+  /** Map intent slugs to canonical GitHub topic clusters.
+   *  When a repo's topics overlap the cluster for the user's intent, it gets a
+   *  relevance boost — even when keyword matching misses (e.g., "devops-tool" intent
+   *  boosts repos with topics like "ci-cd", "continuous-integration" even if the
+   *  query keywords didn't include those exact strings). */
+  private static readonly INTENT_TOPIC_CLUSTERS: Record<string, string[]> = {
+    'devops-tool': ['ci-cd', 'continuous-integration', 'continuous-delivery', 'continuous-deployment', 'devops', 'automation', 'pipeline', 'cicd'],
+    'database': ['database', 'sql', 'nosql', 'orm', 'migration', 'postgres', 'mysql', 'mongodb', 'redis', 'sqlite', 'mariadb', 'cassandra', 'cockroachdb'],
+    'monitoring': ['monitoring', 'observability', 'logging', 'tracing', 'alerting', 'metrics', 'apm', 'prometheus', 'grafana', 'datadog'],
+    'containerization': ['docker', 'container', 'kubernetes', 'k8s', 'orchestration', 'podman', 'containerd'],
+    'authentication': ['authentication', 'oauth', 'sso', 'identity', 'saml', 'ldap', 'auth', 'login', 'permissions', 'rbac'],
+    'web-framework': ['web', 'http', 'rest', 'api', 'frontend', 'backend', 'fullstack', 'ssr', 'spa', 'nextjs', 'nuxt', 'svelte'],
+    'testing': ['testing', 'test', 'e2e', 'unit-testing', 'integration-testing', 'tdd', 'pytest', 'jest', 'cypress'],
+    'ai-ml-tool': ['machine-learning', 'deep-learning', 'neural-network', 'nlp', 'computer-vision', 'ai', 'ml', 'llm', 'transformer', 'pytorch', 'tensorflow', 'model', 'inference', 'training'],
+    'security-tool': ['security', 'encryption', 'vulnerability', 'pentesting', 'firewall', 'compliance', 'tls', 'crypto'],
+    'password-manager': ['password', 'vault', 'credentials', 'secrets', 'credential-manager'],
+    'self-hosted': ['self-hosted', 'homelab', 'on-premise', 'deployment', 'hosting'],
+    'networking-tool': ['networking', 'proxy', 'gateway', 'vpn', 'dns', 'load-balancer', 'cdn', 'traefik', 'caddy', 'nginx'],
+    'messaging': ['chat', 'messaging', 'irc', 'matrix', 'xmpp', 'websocket', 'pubsub'],
+    'cli-tool': ['cli', 'terminal', 'shell', 'command-line', 'tui'],
+    'automation': ['automation', 'bot', 'script', 'workflow', 'cron', 'scheduler'],
+    'web-app': ['web', 'http', 'rest', 'api', 'frontend', 'backend', 'fullstack', 'ssr', 'spa', 'nextjs', 'nuxt', 'svelte'],
+    'mobile-app': ['mobile', 'ios', 'android', 'react-native', 'flutter', 'swift', 'kotlin'],
+    'library': ['library', 'lib', 'package', 'module', 'sdk', 'framework'],
+  };
 
   private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[], precomputed?: PrecomputedRepo): number {
     let score = 0.3;
@@ -264,6 +311,70 @@ export class RankingEngine {
     for (const tech of criteria.technologies) {
       const t = tech.toLowerCase();
       if (desc.includes(t) || topics.includes(t)) score += 0.08;
+    }
+
+    // ── UseCase phrase matching ──
+    // useCase (e.g., "Self-hosted CI/CD platform") encodes the user's specific scenario.
+    // Break it into sub-phrases and check each against description and topics.
+    // This catches repos like "Drone - Continuous Delivery" whose description matches
+    // the "continuous delivery" sub-phrase of the useCase, even when no individual
+    // keyword token matched.
+    const useCaseLower = criteria.useCase?.toLowerCase() ?? '';
+    if (useCaseLower.length >= 4) {
+      // Split useCase into phrase chunks (separated by commas, semicolons, or " - ")
+      const useCasePhrases = useCaseLower.split(/[,;]/).map(p => p.trim()).filter(p => p.length >= 4);
+      for (const phrase of useCasePhrases) {
+        if (desc.includes(phrase)) score += 0.07;
+        // Also check each 2+ word sub-phrase of the useCase
+        const words = phrase.split(/\s+/);
+        if (words.length >= 2) {
+          // Sliding window of 2-word and 3-word phrases
+          for (let w = 2; w <= Math.min(3, words.length); w++) {
+            for (let i = 0; i <= words.length - w; i++) {
+              const subPhrase = words.slice(i, i + w).join(' ');
+              if (subPhrase.length >= 4 && desc.includes(subPhrase)) score += 0.04;
+              if (subPhrase.length >= 4 && topics.some(t => t.includes(subPhrase.replace(/\s+/g, '-')))) score += 0.03;
+            }
+          }
+        }
+      }
+    }
+
+    // ── Vietnamese-aware useCase decomposition ──
+    // When originalQuery is set, useCase holds the raw Vietnamese text, which won't
+    // match English repo descriptions well. Also decompose the English translation
+    // and expandedKeywords as useCase sub-phrases for better phrase-level matching.
+    if (criteria.originalQuery && criteria.englishTranslation) {
+      const engPhrases = criteria.englishTranslation.toLowerCase()
+        .split(/[,;]/).map(p => p.trim()).filter(p => p.length >= 4);
+      for (const phrase of engPhrases) {
+        if (desc.includes(phrase)) score += 0.05;
+        const words = phrase.split(/\s+/);
+        if (words.length >= 2) {
+          for (let w = 2; w <= Math.min(3, words.length); w++) {
+            for (let i = 0; i <= words.length - w; i++) {
+              const subPhrase = words.slice(i, i + w).join(' ');
+              if (subPhrase.length >= 4 && desc.includes(subPhrase)) score += 0.03;
+              if (subPhrase.length >= 4 && topics.some(t => t.includes(subPhrase.replace(/\s+/g, '-')))) score += 0.02;
+            }
+          }
+        }
+      }
+    }
+
+    // ── Intent-topic alignment ──
+    // Repos with topics in the same domain as the user's intent get a boost.
+    // This is critical for queries like "self-hosted CI/CD" where the intent is "devops-tool"
+    // — a repo like gitea with topic "continuous-integration" should rank higher than a
+    // generic "self-hosted" repo without devops topics, even if gitea's description
+    // doesn't contain every query keyword.
+    const intentSlug = criteria.intent.toLowerCase().replace(/[_\s-]+/g, '-');
+    const cluster = RankingEngine.INTENT_TOPIC_CLUSTERS[intentSlug];
+    if (cluster) {
+      const overlap = topics.filter(t => cluster.some(c => t === c || t.replace(/[_\-]/g, '-') === c));
+      if (overlap.length > 0) {
+        score += Math.min(0.15, overlap.length * 0.05);
+      }
     }
 
     // ── Cross-language semantic matching ──
@@ -291,10 +402,62 @@ export class RankingEngine {
       }
     }
 
+    // ── Expanded keyword matching (Vietnamese synonym expansion) ──
+    // expandedKeywords come from Vietnamese synonym expansion (e.g., "quản lý" →
+    // ["management", "manager", "admin"]). A repo whose description or topics
+    // contain one of these synonyms should get a smaller boost than primary
+    // keywords (which already got a full token match), but enough to surface
+    // relevant repos that use different terminology than the direct translation.
+    if (criteria.expandedKeywords && criteria.expandedKeywords.length > 0) {
+      for (const expanded of criteria.expandedKeywords) {
+        const e = expanded.toLowerCase();
+        if (desc.includes(e) || topics.some(t => t === e || t === e.replace(/\s+/g, '-'))) score += 0.04;
+        if (fullName.includes(e)) score += 0.06;
+      }
+    }
+
+    // ── Vietnamese original query matching ──
+    // When the user searched in Vietnamese (originalQuery is set), also boost
+    // repos whose metadata contains the Vietnamese keywords themselves or their
+    // diacritics-stripped forms. Many GitHub repos have Vietnamese in slug-style
+    // names (e.g., "quản-lý") or descriptions. Matching "quan ly" (stripped)
+    // against "quan-ly" in full_name catches repos the English translation alone
+    // would miss. Low weight to avoid over-boosting — this is a secondary signal.
+    if (criteria.originalQuery) {
+      const originalLower = criteria.originalQuery.toLowerCase();
+      const originalTokens = originalLower.split(/[\s,;.!?(){}[\]]+/)
+        .filter(w => w.length >= 3 && !STOP_WORDS.has(w) && !VIET_STOP_WORDS.has(w));
+      for (const token of originalTokens) {
+        // Match the Vietnamese keyword directly (some repos have vn descriptions)
+        if (fullName.includes(token) || desc.includes(token)) score += 0.03;
+        // Match the diacritics-stripped version against slug-style names
+        const stripped = normalizeDiacritics(token).toLowerCase();
+        if (stripped !== token && stripped.length >= 3) {
+          // "quản" → "quan", check against "quan" in full_name or description
+          if (fullName.includes(stripped) || desc.includes(stripped)) score += 0.04;
+          // Also check hyphenated form "quan-ly" which appears in GitHub slugs
+          // for Vietnamese repo names
+          const hyphenated = stripped.replace(/\s+/g, '-');
+          if (hyphenated !== stripped && (fullName.includes(hyphenated) || desc.includes(hyphenated))) score += 0.04;
+        }
+      }
+      // Also check the full original query as a hyphenated slug
+      const fullSlug = normalizeDiacritics(originalLower.replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF]/g, '').trim()).replace(/\s+/g, '-');
+      if (fullSlug.length >= 4 && (fullName.includes(fullSlug) || desc.includes(fullSlug))) score += 0.05;
+    }
+
+    // ── Topic richness bonus (small flat boost for well-described repos) ──
     if (repo.topics.length >= 5) score += 0.04;
     if ((repo.description?.length ?? 0) > 50) score += 0.02;
 
-    return Math.min(1, score);
+    // ── Soft saturation: apply diminishing returns instead of a hard 1.0 cap ──
+    // A hard Math.min(1, score) makes all repos above ~7 token matches
+    // indistinguishable (all score 1.0), destroying rank discrimination.
+    // The formula  score / (1 + score)  maps [0, ∞) → [0, 1) with natural
+    // diminishing returns — every additional match still increases the score,
+    // but the marginal gain shrinks as the total grows, and the value
+    // asymptotically approaches 1 without ever reaching it.
+    return score / (1 + score);
   }
 }
 

@@ -128,4 +128,88 @@ describe('QueryGenerator (unit)', () => {
     expect(params.query).toContain('ci-cd');
     expect(params.sort).toBe('stars');
   });
+
+  // ── Vietnamese diacritics-stripped search variants ──
+  describe('Vietnamese diacritics-stripped search variants', () => {
+    it('adds diacritics-stripped variants for Vietnamese originalQuery', () => {
+      const { qg } = createQg('{}');
+
+      const paramsArray = qg.buildSearchParamsArray({
+        keywords: ['password manager'], // English keywords from LLM
+        technologies: [],
+        intent: 'password-manager',
+        useCase: 'quản lý mật khẩu',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        originalQuery: 'quản lý mật khẩu',
+      });
+
+      // Should have the original English keyword
+      const queries = paramsArray.map(p => p.query);
+      expect(queries).toContain('password manager');
+      // Should also have diacritics-stripped slug from originalQuery
+      const hasSlug = queries.some(q => q.includes('quan-ly') || q.includes('quan ly'));
+      expect(hasSlug).toBe(true);
+    });
+
+    it('does not add Vietnamese variants when originalQuery is missing', () => {
+      const { qg } = createQg('{}');
+
+      const paramsArray = qg.buildSearchParamsArray({
+        keywords: ['docker', 'ci-cd'],
+        technologies: [],
+        intent: 'devops-tool',
+        useCase: 'CI/CD tool',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+      });
+
+      // No originalQuery → no Vietnamese variants
+      expect(paramsArray.map(p => p.query)).toEqual(['docker', 'ci-cd']);
+    });
+
+    it('handles đ stripping correctly in search variants', () => {
+      const { qg } = createQg('{}');
+
+      const paramsArray = qg.buildSearchParamsArray({
+        keywords: ['login auth'], // English keywords from LLM
+        technologies: [],
+        intent: 'cli-tool',
+        useCase: 'đăng nhập hệ thống',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        originalQuery: 'đăng nhập hệ thống',
+      });
+
+      // "đăng" → "dang" → "dang-nhap" as part of slug
+      const queries = paramsArray.map(p => p.query);
+      const hasStripped = queries.some(q => q.includes('dang'));
+      expect(hasStripped).toBe(true);
+    });
+
+    it('does not duplicate search params for ASCII keywords', () => {
+      const { qg } = createQg('{}');
+
+      const paramsArray = qg.buildSearchParamsArray({
+        keywords: ['monitoring'], // Pure ASCII - no diacritics
+        technologies: [],
+        intent: 'devops-tool',
+        useCase: 'monitoring tool',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        originalQuery: 'giám sát máy chủ',
+      });
+
+      // "monitoring" itself is ASCII, not duplicated
+      const count = paramsArray.filter(p => p.query === 'monitoring').length;
+      expect(count).toBe(1);
+      // But originalQuery should still produce stripped Vietnamese variants
+      const hasViSlug = paramsArray.some(p => p.query.includes('giam') || p.query.includes('sat'));
+      expect(hasViSlug).toBe(true);
+    });
+  });
 });

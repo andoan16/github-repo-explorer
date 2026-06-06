@@ -4,6 +4,8 @@ interface Props {
   filters: SearchFilters;
   onChange: (filters: SearchFilters) => void;
   disabled: boolean;
+  filtersChanged: boolean;
+  onApply: () => void;
 }
 
 const LANGUAGES = [
@@ -15,7 +17,7 @@ const LICENSES = [
   '', 'mit', 'apache-2.0', 'gpl-3.0', 'bsd-3-clause', 'mpl-2.0',
 ];
 
-export default function Filters({ filters, onChange, disabled }: Props) {
+export default function Filters({ filters, onChange, disabled, filtersChanged, onApply }: Props) {
   const set = (key: keyof SearchFilters, value: string | number | null) => {
     onChange({ ...filters, [key]: value });
   };
@@ -57,6 +59,15 @@ export default function Filters({ filters, onChange, disabled }: Props) {
           disabled={disabled}
         />
       </label>
+      {filtersChanged && (
+        <button
+          className="btn-primary filter-apply-btn"
+          disabled={disabled}
+          onClick={onApply}
+        >
+          Apply Filters
+        </button>
+      )}
     </div>
   );
 }
