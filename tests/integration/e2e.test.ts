@@ -18,7 +18,7 @@ describe('End-to-end search flow', () => {
     const ranking = new RankingEngine();
 
     const qg = new QueryGenerator(
-      ollamaMock as unknown as Parameters<typeof QueryGenerator>[0],
+      ollamaMock as unknown as OllamaClient,
       'llama3.2',
     );
 
@@ -95,7 +95,6 @@ describe('End-to-end search flow', () => {
       language: 'typescript',
       license: 'mit',
       minStars: 100,
-      maxAgeMonths: 12,
     };
 
     const params: Parameters<typeof githubMock.searchRepos>[0] = {
@@ -120,7 +119,7 @@ describe('End-to-end search flow', () => {
     const ollamaMock = createMockOllamaClient();
     const githubMock = createMockGitHubClient();
     const qg = new QueryGenerator(
-      ollamaMock as unknown as Parameters<typeof QueryGenerator>[0],
+      ollamaMock as unknown as OllamaClient,
       'llama3.2',
     );
 
@@ -215,7 +214,7 @@ describe('End-to-end search flow', () => {
 
     // Initial search
     const qgInitial = new QueryGenerator(
-      ollamaMock as unknown as Parameters<typeof QueryGenerator>[0],
+      ollamaMock as unknown as OllamaClient,
       'llama3.2',
     );
     const criteria = await qgInitial.extractCriteria('CI/CD tool');
@@ -238,7 +237,7 @@ describe('End-to-end search flow', () => {
     );
 
     const qgRefine = new QueryGenerator(
-      ollamaMock as unknown as Parameters<typeof QueryGenerator>[0],
+      ollamaMock as unknown as OllamaClient,
       'llama3.2',
     );
     const refined = await qgRefine.refineCriteria(criteria, 'more DevOps focused', 'CI/CD tool');
@@ -269,7 +268,7 @@ describe('End-to-end search flow', () => {
   it('generates explanation on demand for a single repo', async () => {
     const ollamaMock = createMockOllamaClient();
     const qg = new QueryGenerator(
-      ollamaMock as unknown as Parameters<typeof QueryGenerator>[0],
+      ollamaMock as unknown as OllamaClient,
       'llama3.2',
     );
 

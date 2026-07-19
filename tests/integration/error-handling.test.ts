@@ -19,7 +19,7 @@ describe('Error handling', () => {
   it('handles Ollama server unavailable during search', async () => {
     const mock = createDisconnectedOllamaClient();
     const qg = new QueryGenerator(
-      mock as unknown as Parameters<typeof QueryGenerator>[0],
+      mock as unknown as OllamaClient,
       'llama3.2',
     );
     await expect(qg.extractCriteria('test')).rejects.toThrow();
@@ -29,7 +29,7 @@ describe('Error handling', () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('I think the keywords are docker and ci-cd but I am not sure');
     const qg = new QueryGenerator(
-      mock as unknown as Parameters<typeof QueryGenerator>[0],
+      mock as unknown as OllamaClient,
       'llama3.2',
     );
     await expect(qg.extractCriteria('test')).rejects.toThrow('Failed to parse LLM output');
@@ -39,7 +39,7 @@ describe('Error handling', () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('');
     const qg = new QueryGenerator(
-      mock as unknown as Parameters<typeof QueryGenerator>[0],
+      mock as unknown as OllamaClient,
       'llama3.2',
     );
     await expect(qg.extractCriteria('test')).rejects.toThrow();
@@ -49,7 +49,7 @@ describe('Error handling', () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('{"keywords":["test"]}');
     const qg = new QueryGenerator(
-      mock as unknown as Parameters<typeof QueryGenerator>[0],
+      mock as unknown as OllamaClient,
       'llama3.2',
     );
     const criteria = await qg.extractCriteria('test');
