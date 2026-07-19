@@ -11,6 +11,8 @@ interface SearchState {
   moreAvailable: boolean;
   /** True while loading-more pagination is in progress (does NOT hide results) */
   loadingMore: boolean;
+  /** Error from the last load-more attempt (rate limit, network, etc.) */
+  loadMoreError: string | null;
 }
 
 function isRefinementDuplicate(text: string, applied: Set<string>): boolean {
@@ -72,6 +74,7 @@ export function useSearch() {
     suggestions: [],
     moreAvailable: false,
     loadingMore: false,
+    loadMoreError: null,
   });
 
   const [selectedResult, setSelectedResult] = useState<GitHubSearchResult | null>(null);
@@ -93,7 +96,9 @@ export function useSearch() {
   const execute = useCallback(async (request: string, filters?: unknown) => {
     if (!request.trim()) return;
 
-    currentGenRef.current++;
+    // Increment generation counter for cancellation. Any in-flight request
+    // with a lower generation is stale and its result must be discarded.
+    const gen = ++currentGenRef.current;
     appliedRefinements.current = new Set();
 
     setState({
@@ -105,10 +110,15 @@ export function useSearch() {
       suggestions: [],
       moreAvailable: false,
       loadingMore: false,
+      loadMoreError: null,
     });
     setSelectedResult(null);
 
     const res = await window.repoExplorer.search(request, filters);
+
+    // Guard: if a newer search/refine was triggered while we were waiting,
+    // discard this result to avoid overwriting fresher state.
+    if (gen !== currentGenRef.current) return;
 
     if (res.ok && res.data) {
       const data = res.data as { results: GitHubSearchResult[]; totalSearched: number; suggestions?: string[] };
@@ -121,6 +131,7 @@ export function useSearch() {
         moreAvailable: true,
         suggestions: [],
         loadingMore: false,
+        loadMoreError: null,
       });
     } else {
       setState({
@@ -132,31 +143,37 @@ export function useSearch() {
         suggestions: [],
         moreAvailable: false,
         loadingMore: false,
+        loadMoreError: null,
       });
     }
   }, []);
 
-  const refine = useCallback(async (refinementText: string) => {
-    if (!refinementText.trim()) return;
+  const refine = useCallback(async (refinementText: string): Promise<number | undefined> => {
+    if (!refinementText.trim()) return undefined;
 
+    // Increment generation counter so any in-flight execute/loadMore is cancelled.
+    const gen = ++currentGenRef.current;
     appliedRefinements.current.add(refinementText.trim());
 
-    setState({
+    // Keep existing results visible during refinement — only show the searching
+    // spinner. Clearing results here causes a jarring flash of empty state.
+    setState(s => ({
+      ...s,
       searching: true,
-      hasSearched: true,
-      results: [],
-      totalSearched: 0,
       error: null,
       suggestions: [],
-      moreAvailable: false,
       loadingMore: false,
-    });
+      loadMoreError: null,
+    }));
     setSelectedResult(null);
 
     const res = await window.repoExplorer.refine(refinementText);
 
+    // Guard: discard if a newer search/refine was triggered.
+    if (gen !== currentGenRef.current) return undefined;
+
     if (res.ok && res.data) {
-      const data = res.data as { results: GitHubSearchResult[]; totalSearched: number; note?: string };
+      const data = res.data as { results: GitHubSearchResult[]; totalSearched: number; note?: string; minStars?: number };
       setState({
         searching: false,
         hasSearched: true,
@@ -166,7 +183,9 @@ export function useSearch() {
         suggestions: [],
         moreAvailable: false,
         loadingMore: false,
+        loadMoreError: null,
       });
+      return data.minStars;
     } else {
       setState({
         searching: false,
@@ -177,7 +196,9 @@ export function useSearch() {
         suggestions: [],
         moreAvailable: false,
         loadingMore: false,
+        loadMoreError: null,
       });
+      return undefined;
     }
   }, []);
 
@@ -186,7 +207,7 @@ export function useSearch() {
     // while paginating. Setting searching=true hides the entire results
     // section and shows the big center spinner, which collapses the DOM
     // and scrolls the user back to the top.
-    setState(s => ({ ...s, loadingMore: true }));
+    setState(s => ({ ...s, loadingMore: true, loadMoreError: null }));
 
     const res = await window.repoExplorer.searchMore();
 
@@ -195,13 +216,14 @@ export function useSearch() {
       setState(s => ({
         ...s,
         loadingMore: false,
+        loadMoreError: null,
         results: [...s.results, ...data.results],
         totalSearched: data.totalSearched,
         moreAvailable: data.moreAvailable,
       }));
     } else {
       console.error('Load more failed:', res.error);
-      setState(s => ({ ...s, loadingMore: false }));
+      setState(s => ({ ...s, loadingMore: false, loadMoreError: res.error ?? 'Failed to load more results' }));
     }
   }, []);
 
@@ -216,6 +238,7 @@ export function useSearch() {
       suggestions: [],
       moreAvailable: false,
       loadingMore: false,
+      loadMoreError: null,
     });
     setSelectedResult(null);
   }, []);

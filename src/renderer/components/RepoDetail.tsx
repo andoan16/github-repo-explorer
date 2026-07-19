@@ -1,11 +1,30 @@
 import { useMemo, useState, useEffect } from 'react';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import type { GitHubSearchResult } from '../../shared/types';
 import MatchExplanation from './MatchExplanation';
 import CloneButton from './CloneButton';
 import BookmarkButton from './BookmarkButton';
 
 marked.setOptions({ breaks: true, gfm: true });
+
+// Sanitize HTML before rendering to prevent XSS from untrusted GitHub README content.
+// Allow common README elements (headings, lists, code, images, links, tables) but strip
+// scripts, event handlers, iframes, and other dangerous markup.
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    'h1','h2','h3','h4','h5','h6','p','br','hr','blockquote','pre','code',
+    'em','strong','del','sup','sub','mark','small','abbr','cite','q',
+    'ul','ol','li','dl','dt','dd',
+    'table','thead','tbody','tr','th','td','caption','colgroup','col',
+    'a','img','span','div','figure','figcaption','details','summary',
+    'kbd','samp','var','time','address','article','aside','header','footer','section',
+  ],
+  ALLOWED_ATTR: ['href','src','alt','title','width','height','colspan','rowspan','target','rel','align','valign','id','class','datetime'],
+  ALLOW_DATA_ATTR: true,
+  FORBID_TAGS: ['script','style','iframe','object','embed','form','input','textarea','button','select','option','link','meta','base'],
+  FORBID_ATTR: ['onerror','onload','onclick','onmouseover','onmouseout','onfocus','onblur','onchange','oninput','onsubmit','formaction','action','method'],
+};
 
 /**
  * Rewrite relative image URLs in Markdown to absolute GitHub raw URLs.
@@ -99,7 +118,9 @@ export default function RepoDetail({ result, bookmarked, onClose, onBookmark }: 
       const [owner, name] = repo.full_name.split('/');
       const rewritten = rewriteRelativeImageUrls(lazyReadme, owner, name, repo.default_branch);
       const parsed = marked.parse(rewritten) as string;
-      return rewriteRelativeHtmlImgSrcs(parsed, owner, name, repo.default_branch);
+      const html = rewriteRelativeHtmlImgSrcs(parsed, owner, name, repo.default_branch);
+      // Sanitize untrusted GitHub README HTML to prevent XSS in the renderer process.
+      return DOMPurify.sanitize(html, PURIFY_CONFIG) as string;
     } catch {
       return null;
     }

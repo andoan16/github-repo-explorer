@@ -1,5 +1,8 @@
 import { ipcMain, dialog } from 'electron';
 import { spawn } from 'child_process';
+import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { app } from 'electron';
 import { OllamaClient } from './ollama/client';
 import { GitHubClient } from './github/client';
 import { QueryGenerator } from './search/query-gen';
@@ -28,6 +31,16 @@ interface CachedSearch {
   broadCount: number;
 }
 
+/** Apply client-side minStars filter to repos.
+ *  We don't send stars:>=N to GitHub API because combining a star qualifier
+ *  with keyword queries often returns 0 results (GitHub requires ALL terms to
+ *  match). Instead, we fetch broadly and filter here — this guarantees we find
+ *  relevant repos even at high star thresholds. */
+function filterByMinStars(repos: GitHubRepo[], minStars?: number): GitHubRepo[] {
+  if (!minStars || minStars <= 0) return repos;
+  return repos.filter(r => r.stars >= minStars!);
+}
+
 let lastSearchCache: CachedSearch | null = null;
 let lastSearchParams: {
   queries: { query: string; language?: string; license?: string; minStars?: number; sort: string; order: string }[];
@@ -43,6 +56,62 @@ let searchGeneration = 0;
 
 /** Abort controllers keyed by generation — abort superseded searches mid-flight. */
 const searchAbortControllers = new Map<number, AbortController>();
+
+/**
+ * Log search results to a debug file for offline analysis.
+ * Each search appends a timestamped block with the user query, criteria,
+ * GitHub queries sent, and the ranked results with scores.
+ * The file is at <userData>/search-debug-log.txt.
+ */
+function logSearchResults(
+  userRequest: string,
+  criteria: SearchCriteria,
+  allParams: { query: string }[],
+  ranked: { repo: GitHubRepo; score: any }[],
+  servedCount: number,
+): void {
+  try {
+    const logDir = join(app.getPath('userData'), 'logs');
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+    const logPath = join(logDir, 'search-debug-log.txt');
+
+    const now = new Date();
+    const ts = now.toISOString();
+    const lines: string[] = [];
+
+    lines.push('═'.repeat(80));
+    lines.push(`[${ts}] Search: "${userRequest}"`);
+    lines.push('─'.repeat(80));
+    lines.push(`Intent: ${criteria.intent}`);
+    lines.push(`Keywords: ${JSON.stringify(criteria.keywords)}`);
+    lines.push(`Technologies: ${JSON.stringify(criteria.technologies)}`);
+    if (criteria.englishTranslation) lines.push(`English translation: ${criteria.englishTranslation}`);
+    if (criteria.technicalConcepts?.length) lines.push(`Technical concepts: ${JSON.stringify(criteria.technicalConcepts)}`);
+    if (criteria.expandedKeywords?.length) lines.push(`Expanded keywords: ${JSON.stringify(criteria.expandedKeywords)}`);
+    if (criteria.originalQuery) lines.push(`Original Vietnamese: "${criteria.originalQuery}"`);
+    lines.push('');
+    lines.push(`GitHub queries (${allParams.length}):`);
+    allParams.forEach((p, i) => lines.push(`  ${i + 1}. "${p.query}"`));
+    lines.push('');
+    lines.push(`Ranked results (showing top ${Math.min(servedCount, ranked.length)} of ${ranked.length}):`);
+    ranked.slice(0, servedCount).forEach((r, i) => {
+      const repo = r.repo;
+      const score = r.score;
+      lines.push(`  #${i + 1} ${repo.full_name} (★${repo.stars})`);
+      lines.push(`       Score: total=${score.total} semantic=${score.semanticMatch} stars=${score.starsScore} activity=${score.activityScore} readme=${score.readmeRelevance} lang=${score.languageMatch} license=${score.licenseCompatibility}`);
+      lines.push(`       Desc: ${(repo.description ?? 'no description').slice(0, 120)}`);
+      lines.push(`       Topics: ${JSON.stringify(repo.topics)}`);
+      lines.push(`       Lang: ${repo.language ?? 'n/a'} | Updated: ${repo.updated_at} | License: ${repo.license?.key ?? 'none'}`);
+    });
+    lines.push('');
+    lines.push('');
+
+    appendFileSync(logPath, lines.join('\n'), 'utf-8');
+    console.log(`[search-debug] Logged results to ${logPath}`);
+  } catch (err) {
+    console.error('[search-debug] Failed to log results:', err);
+  }
+}
 
 function abortPriorSearch(gen: number): void {
   for (const [existingGen, controller] of searchAbortControllers) {
@@ -307,6 +376,64 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
   return suggestions.slice(0, 6);
 }
 
+/**
+ * Fire-and-forget: generate refinement suggestions for the current result set
+ * and send them to the renderer via IPC.
+ */
+function sendRefinementSuggestions(
+  sender: Electron.WebContents,
+  gen: number,
+  qg: QueryGenerator,
+  repos: GitHubRepo[],
+  userRequest: string,
+  criteria: SearchCriteria,
+  filters?: { language?: string | null; license?: string | null; minStars?: number } | null,
+  feedbackContext?: { narrowCount: number; broadCount: number },
+): void {
+  Promise.resolve().then(async () => {
+    try {
+      const rankedRepos = repos.slice(0, 50);
+
+      // Approximate score percentiles from star/activity metrics for suggestion context
+      const scoreValues = rankedRepos.length > 0
+        ? rankedRepos.map(r => {
+            const starScore = Math.min(r.stars / 10000, 1) * 100;
+            const ageDays = r.updated_at ? (Date.now() - new Date(r.updated_at).getTime()) / 86400000 : 9999;
+            const activityScore = Math.max(0, 100 - ageDays / 30);
+            return (starScore * 0.4 + activityScore * 0.3 + 30);
+          }).sort((a, b) => a - b)
+        : [];
+      const scorePercentiles = scoreValues.length > 0 ? {
+        top: Math.round(scoreValues[scoreValues.length - 1]),
+        median: Math.round(scoreValues[Math.floor(scoreValues.length / 2)]),
+        bottom: Math.round(scoreValues[0]),
+        above80: scoreValues.filter(s => s >= 80).length,
+        below50: scoreValues.filter(s => s < 50).length,
+        total: scoreValues.length,
+      } : undefined;
+
+      const candidates = await qg.generateRefinementSuggestions(
+        userRequest, criteria.keywords, criteria.technologies, criteria.intent,
+        rankedRepos.length, rankedRepos, scorePercentiles, feedbackContext,
+      );
+
+      const validator = new RefinementValidator();
+      const result = validator.validate(candidates, rankedRepos, {
+        language: filters?.language ?? null,
+        license: filters?.license ?? null,
+        minStars: filters?.minStars ?? 0,
+      });
+      let final = deduplicateBatch(result.valid);
+      final = guaranteeCoverage(final, rankedRepos);
+      if (searchGeneration === gen) {
+        sender.send(IPC.SUGGESTIONS_UPDATE, { suggestions: final });
+      }
+    } catch (err) {
+      console.warn('[suggestions] Failed to generate refinement suggestions:', err);
+    }
+  }).catch(() => {});
+}
+
 export function registerIpcHandlers(): void {
   // Pre-warm Ollama connection on startup — establishes TCP/TLS handshake
   // in the background so the first search doesn't pay the connection cost.
@@ -405,7 +532,7 @@ export function registerIpcHandlers(): void {
         const fastSearchParams = {
           query: fastKeywords[0],
           language: filters?.language ?? undefined,
-          minStars: filters?.minStars ?? 0,
+          minStars: 0, // Not sent to GitHub API — applied as post-filter below
           license: filters?.license ?? undefined,
           sort: 'stars' as const, order: 'desc' as const, perPage: 10,
         };
@@ -414,7 +541,8 @@ export function registerIpcHandlers(): void {
         console.log(`[search] Simple query: "${fastKeywords[0]}" → ${simpleSearchResult.repos.length} repos (total: ${simpleSearchResult.totalCount})`);
         if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
-        const repos = simpleSearchResult.repos;
+        // Apply minStars filter client-side (not in GitHub API query)
+        const repos = filterByMinStars(simpleSearchResult.repos, filters?.minStars);
         if (repos.length === 0) {
           return { ok: true, data: { results: [], totalSearched: 0, note: 'No repositories matched.' } };
         }
@@ -452,7 +580,7 @@ export function registerIpcHandlers(): void {
       const fastSearchParams = {
         query: fastKeywords[0],
         language: filters?.language ?? undefined,
-        minStars: filters?.minStars ?? 0,
+        minStars: 0, // Not sent to GitHub API — applied as post-filter below
         license: filters?.license ?? undefined,
         sort: 'stars' as const,
         order: 'desc' as const,
@@ -467,13 +595,21 @@ export function registerIpcHandlers(): void {
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
+      // Apply minStars filter client-side (not in GitHub API query)
+      // This must happen BEFORE the early-return check so we don't bail
+      // when GitHub found repos but none meet the star threshold.
+      const phase1Filtered = filterByMinStars(fastSearchResult.repos, filters?.minStars);
+
       // Vietnamese zero-recall rescue: if Phase 1 returned nothing but the query
       // was Vietnamese, don't return empty right away — fall through to Phase 2
       // which can produce a proper English query via LLM. Without this, any
       // Vietnamese query that our local dictionary didn't fully translate gets
       // stuck at 0 results forever.
       const viZeroRecall = isVietnamesePhase1 && fastSearchResult.repos.length === 0;
-      if (fastSearchResult.repos.length === 0 && !viZeroRecall) {
+      // Also don't bail if Phase 1 found repos but the minStars filter
+      // eliminated them all — Phase 2 may find repos that match the star threshold.
+      const filterZeroRecall = filters?.minStars && filters.minStars > 0 && phase1Filtered.length === 0 && fastSearchResult.repos.length > 0;
+      if (fastSearchResult.repos.length === 0 && !viZeroRecall && !filterZeroRecall) {
         return { ok: true, data: { results: [], totalSearched: 0, note: 'No repositories matched.' } };
       }
 
@@ -492,7 +628,7 @@ export function registerIpcHandlers(): void {
         };
 
         perf.beginPhase('ranking');
-        const fastRanked = await rankingEngine.rank(fastSearchResult.repos, fastCriteria, new Map(), userRequest, 50);
+        const fastRanked = await rankingEngine.rank(phase1Filtered, fastCriteria, new Map(), userRequest, 50);
         perf.endPhase('ranking');
 
         // Save state so future scroll-reveal and searchMore work
@@ -583,20 +719,28 @@ export function registerIpcHandlers(): void {
         } catch { /* best-effort */ }
       }
 
-      // ── Vietnamese enrichment: deterministically add tech terms, synonyms, intent ──
+      // ── Vietnamese fallback enrichment: deterministically add tech terms ──
+      // Only merge dictionary synonyms/expandedKeywords when the LLM did NOT
+      // produce its own. When the LLM reasons and produces good keywords, we
+      // trust its judgment — the dictionary may have a narrower translation
+      // (e.g., "canteen-management") that would override the LLM's broader,
+      // more accurate understanding (e.g., "point-of-sale inventory sales").
       if (isVietnamese) {
         try {
           const structured = quickVietnameseTranslateStructured(userRequest);
           if (structured) {
+            // Tech terms (docker, kubernetes) are factual — always merge.
             const mergedTechConcepts = [
               ...(criteria.technicalConcepts ?? []),
               ...structured.techTerms,
             ].filter((v, i, a) => a.indexOf(v) === i);
 
-            const mergedExpandedKeywords = [
-              ...(criteria.expandedKeywords ?? []),
-              ...structured.expandedKeywords,
-            ].filter((v, i, a) => a.indexOf(v) === i);
+            // Dictionary expandedKeywords: only merge as fallback when the
+            // LLM produced none. When the LLM provides good expandedKeywords,
+            // don't dilute them with dictionary synonyms.
+            const mergedExpandedKeywords = (criteria.expandedKeywords?.length ?? 0) > 0
+              ? criteria.expandedKeywords!
+              : structured.expandedKeywords;
 
             const mergedIntent = (criteria.intent === 'other' || !criteria.intent) && structured.intent
               ? structured.intent
@@ -632,7 +776,7 @@ export function registerIpcHandlers(): void {
           allParams.push({
             query: broadQuery,
             language: filters?.language ?? undefined,
-            minStars: filters?.minStars ?? criteria.minStars,
+            minStars: 0, // Not sent to GitHub API — applied as post-filter
             license: filters?.license ?? criteria.preferredLicense ?? undefined,
             sort: 'stars' as const,
             order: 'desc' as const,
@@ -646,6 +790,7 @@ export function registerIpcHandlers(): void {
       const searchResults = await boundedAllSettled(
         allParams.map((params) => () => cachedSearchRepos(github, params, ac.signal)),
         githubConcurrency,
+        ac.signal,
       );
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
@@ -655,8 +800,10 @@ export function registerIpcHandlers(): void {
         .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof github.searchRepos>>> => r.status === 'fulfilled')
         .map((r) => r.value);
 
-      // Include fast results in the merge
-      successfulResults.push(fastSearchResult);
+      // Include fast results in the merge (skip if Phase 1 had zero recall)
+      if (!viZeroRecall) {
+        successfulResults.push(fastSearchResult);
+      }
 
       const repoMap = new Map<number, GitHubRepo>();
       let totalCount = 0;
@@ -671,19 +818,22 @@ export function registerIpcHandlers(): void {
       }
       const repos = [...repoMap.values()];
 
-      // If all searches returned nothing, return empty results
-      if (repos.length === 0 && !viZeroRecall) {
+      // Apply minStars filter client-side to final merged results
+      const filteredRepos = filterByMinStars(repos, filters?.minStars);
+
+      // If all searches returned nothing (after star filter), return empty results
+      if (filteredRepos.length === 0 && !viZeroRecall) {
         // Even LLM queries found nothing — try returning Phase 1 results if any
         if (fastResults.length > 0) {
-          return { ok: true, data: { results: fastResults, totalSearched: fastSearchResult.repos.length, suggestions: [], timings: perf.getTimings() } };
+          return { ok: true, data: { results: fastResults, totalSearched: phase1Filtered.length, suggestions: [], timings: perf.getTimings() } };
         }
         return { ok: true, data: { results: [], totalSearched: 0, suggestions: [], timings: perf.getTimings() } };
       }
 
       // ── Pre-rank fetch: get READMEs for top candidates by stars ──
       const README_PREFETCH_TOP_N = 20;
-      const topCandidates = repos.length > 0
-        ? [...repos].sort((a, b) => b.stars - a.stars).slice(0, README_PREFETCH_TOP_N)
+      const topCandidates = filteredRepos.length > 0
+        ? [...filteredRepos].sort((a, b) => b.stars - a.stars).slice(0, README_PREFETCH_TOP_N)
         : [];
 
       perf.beginPhase('readme');
@@ -697,6 +847,7 @@ export function registerIpcHandlers(): void {
               ac.signal,
             )),
             githubConcurrency,
+            ac.signal,
           )
         : [];
       const readmes = new Map<number, string | null>();
@@ -711,8 +862,8 @@ export function registerIpcHandlers(): void {
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
       // Rank with enriched criteria + README-enriched readmes map
-      const ranked = repos.length > 0
-        ? await rankingEngine.rank(repos, criteria, readmes, userRequest, 50)
+      const ranked = filteredRepos.length > 0
+        ? await rankingEngine.rank(filteredRepos, criteria, readmes, userRequest, 50)
         : [];
 
       const enrichedResults: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
@@ -764,32 +915,16 @@ export function registerIpcHandlers(): void {
         total: scoreValues.length,
       } : undefined;
 
-      Promise.resolve().then(async () => {
-        try {
-          perf.beginPhase('suggestion');
-          const candidates = await qg.generateRefinementSuggestions(
-            userRequest, criteria.keywords, criteria.technologies, criteria.intent,
-            repos.length, repos, scorePercentiles, undefined,
-          );
-          perf.endPhase('suggestion');
-          const validator = new RefinementValidator();
-          const result = validator.validate(candidates, repos, {
-            language: filters?.language ?? null,
-            license: filters?.license ?? null,
-            minStars: filters?.minStars ?? 0,
-          });
-          let final = deduplicateBatch(result.valid);
-          final = guaranteeCoverage(final, repos);
-          if (searchGeneration === gen) {
-            _event.sender.send(IPC.SUGGESTIONS_UPDATE, { suggestions: final });
-          }
-        } catch {
-          perf.endPhase('suggestion');
-          /* silently ignore */
-        }
-      }).catch(() => {});
+      // Fire-and-forget suggestions via shared helper (avoids duplicating logic)
+      sendRefinementSuggestions(
+        _event.sender, gen, qg, filteredRepos,
+        userRequest, criteria, filters, undefined,
+      );
 
-      return { ok: true, data: { results: enrichedResults.slice(0, 10), totalSearched: repos.length, suggestions: [], timings: perf.getTimings() } };
+      // ── Log search results to debug file for offline analysis ──
+      logSearchResults(userRequest, criteria, allParams, ranked, enrichedResults.slice(0, 10).length);
+
+      return { ok: true, data: { results: enrichedResults.slice(0, 10), totalSearched: filteredRepos.length, suggestions: [], timings: perf.getTimings() } };
     } catch (err) {
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -808,6 +943,7 @@ export function registerIpcHandlers(): void {
 
     const ac = new AbortController();
     searchAbortControllers.set(gen, ac);
+    const sender = _event.sender;
 
     try {
       if (!lastSearchCache) {
@@ -816,9 +952,26 @@ export function registerIpcHandlers(): void {
 
       const cfg = settings.load();
 
+      // ── Track narrow/broad pattern for feedback loop ──
+      const isNarrowing = RefinementParser.isNarrowing(refinementText);
+      if (isNarrowing) lastSearchCache.narrowCount++;
+      else lastSearchCache.broadCount++;
+
       // ── Fast-path: detect deterministic patterns, skip LLM ──
       const parser = new RefinementParser();
       const detected = parser.detect(refinementText);
+
+      // Helper: fire-and-forget new suggestions based on the refined result set
+      const sendSuggestionsFor = (refinedRepos: GitHubRepo[]) => {
+        const ollama = getOllamaClient(cfg);
+        const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+        sendRefinementSuggestions(
+          sender, gen, qg, refinedRepos,
+          lastSearchCache!.originalRequest, lastSearchCache!.originalCriteria,
+          null,
+          { narrowCount: lastSearchCache!.narrowCount, broadCount: lastSearchCache!.broadCount },
+        );
+      };
 
       if (detected?.type === 'raw-sort') {
         // Direct sort — no LLM, instant result
@@ -851,12 +1004,65 @@ export function registerIpcHandlers(): void {
           requestContext: sortedContext,
         }));
 
+        // Update cache to sorted order so subsequent refinements and suggestions are based on it
+        lastSearchCache = { ...lastSearchCache, repos: sorted };
+        sendSuggestionsFor(sorted);
+
         return {
           ok: true,
           data: {
             results,
             totalSearched: lastSearchCache.repos.length,
             note: `Sorted by ${detected.sortKey!.replace('_', ' ')}: "${refinementText}"`,
+          },
+        };
+      }
+
+      // ── Filter fast-path: star threshold filter, skip LLM ──
+      if (detected?.type === 'filter' && detected.minStars !== undefined) {
+        const filtered = lastSearchCache.repos.filter((r) => r.stars >= detected.minStars!);
+
+        if (filtered.length === 0) {
+          return {
+            ok: false,
+            error: `No repositories found with ${detected.minStars!.toLocaleString()}+ stars. Try a lower threshold.`,
+          };
+        }
+
+        // Re-rank filtered results with star-heavy emphasis so star-relevant repos surface
+        const ranked = await rankingEngine.rank(
+          filtered,
+          lastSearchCache.originalCriteria,
+          lastSearchCache.readmes,
+          lastSearchCache.originalRequest,
+          50,
+          { semanticMatch: 1.0, starsScore: 2.0, activityScore: 1.0, readmeRelevance: 0.8, languageMatch: 1.0, licenseCompatibility: 1.0 },
+        );
+
+        // Staleness check: a newer search/refine may have superseded us while
+        // ranking. If so, discard — do NOT mutate lastSearchCache.
+        if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
+        const filterContext = `${lastSearchCache.originalRequest} (filtered: ${refinementText})`;
+        const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
+          repo,
+          readme: lastSearchCache!.readmes.get(repo.id) ?? null,
+          score,
+          matchExplanation: `${detected.minStars!.toLocaleString()}+ stars (filtered)`,
+          requestContext: filterContext,
+        }));
+
+        // Update cache to filtered repos so subsequent refinements and suggestions match
+        lastSearchCache = { ...lastSearchCache, repos: ranked.map(r => r.repo) };
+        sendSuggestionsFor(ranked.map(r => r.repo));
+
+        return {
+          ok: true,
+          data: {
+            results,
+            totalSearched: filtered.length,
+            note: `Filtered to ${detected.minStars!.toLocaleString()}+ stars: "${refinementText}"`,
+            minStars: detected.minStars,
           },
         };
       }
@@ -872,6 +1078,9 @@ export function registerIpcHandlers(): void {
           detected.emphasis,
         );
 
+        // Staleness check after ranking
+        if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
         const rankedContext = `${lastSearchCache.originalRequest} (refined: ${refinementText})`;
         const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
           repo,
@@ -880,6 +1089,10 @@ export function registerIpcHandlers(): void {
           matchExplanation: `Score: ${Math.round(score.total * 100)}% match (refined)`,
           requestContext: rankedContext,
         }));
+
+        // Update cache to re-ranked order so subsequent refinements work on it
+        lastSearchCache = { ...lastSearchCache, repos: ranked.map(r => r.repo) };
+        sendSuggestionsFor(ranked.map(r => r.repo));
 
         return {
           ok: true,
@@ -919,6 +1132,9 @@ export function registerIpcHandlers(): void {
         refinedCriteria.weightEmphasis,
       );
 
+      // Staleness check after ranking
+      if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
       const refinedContext = `${lastSearchCache.originalRequest} (refined: ${refinementText})`;
       const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
         repo,
@@ -927,6 +1143,17 @@ export function registerIpcHandlers(): void {
         matchExplanation: `Score: ${Math.round(score.total * 100)}% match (refined)`,
         requestContext: refinedContext,
       }));
+
+      // Update cache to refined repos so subsequent refinements and suggestions match
+      lastSearchCache = { ...lastSearchCache, repos: ranked.map(r => r.repo) };
+
+      // Generate new suggestions based on the refined result set
+      sendRefinementSuggestions(
+        sender, gen, qg, ranked.map(r => r.repo),
+        lastSearchCache.originalRequest, lastSearchCache.originalCriteria,
+        null,
+        { narrowCount: lastSearchCache.narrowCount, broadCount: lastSearchCache.broadCount },
+      );
 
       return {
         ok: true,
@@ -984,6 +1211,8 @@ export function registerIpcHandlers(): void {
     }
 
     const nextPage = lastSearchParams.page + 1;
+    // Snapshot the current searchGeneration before async work
+    const genBeforeFetch = searchGeneration;
     const github = getGitHubClient(settings.load());
 
     try {
@@ -1003,13 +1232,26 @@ export function registerIpcHandlers(): void {
           page: nextPage,
         });
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        // Graceful degradation: return the error but include the current page
+        // so the UI can decide whether to show a retry button. Don't wipe existing results.
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: `Failed to load more: ${message}` };
       }
+
+      // Staleness check: a new search may have superseded us while we awaited the API call.
+      // If searchGeneration changed, discard these results — they belong to the old search.
+      if (searchGeneration !== genBeforeFetch) {
+        return { ok: false, error: 'Search superseded — results from previous search are no longer valid.' };
+      }
+
+      // Apply minStars filter to newly fetched repos
+      const minStarsFilter = lastSearchParams.filters?.minStars;
+      const filteredSearchRepos = filterByMinStars(searchResult.repos, minStarsFilter);
 
       const existingIds = new Set(lastSearchCache.repos.map(r => r.id));
       const newRepos = new Map<number, GitHubRepo>();
 
-      for (const repo of searchResult.repos) {
+      for (const repo of filteredSearchRepos) {
         if (!existingIds.has(repo.id)) {
           const existing = newRepos.get(repo.id);
           if (!existing || repo.stars > existing.stars) {
@@ -1024,6 +1266,13 @@ export function registerIpcHandlers(): void {
 
       const newReposArray = [...newRepos.values()];
       const ranked = await rankingEngine.rank(newReposArray, lastSearchParams.criteria, lastSearchCache.readmes, lastSearchParams.userRequest, 50);
+
+      // Second staleness check: a new search may have superseded us while we
+      // awaited ranking. If so, discard these results and do NOT mutate
+      // lastSearchCache / lastServedIndex — they belong to the new search.
+      if (searchGeneration !== genBeforeFetch) {
+        return { ok: false, error: 'Search superseded — results from previous search are no longer valid.' };
+      }
 
       const results: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
         repo,
@@ -1112,8 +1361,44 @@ export function registerIpcHandlers(): void {
   });
 
   // ── Clone ──
+  // Whitelist of allowed URL schemes for git clone to prevent argument injection / SSRF
+  const SAFE_REPO_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?:\.git)?$/;
+  const SAFE_REPO_NAME_RE = /^[A-Za-z0-9._-]+$/;
+
+  function validateCloneInputs(repoUrl: unknown, repoName: unknown): { ok: true; url: string; name: string } | { ok: false; error: string } {
+    if (typeof repoUrl !== 'string' || typeof repoName !== 'string') {
+      return { ok: false, error: 'Invalid clone request: url and name must be strings' };
+    }
+    // Reject any whitespace (including newlines that could be interpreted as separate args)
+    if (/\s/.test(repoUrl)) {
+      return { ok: false, error: 'Invalid clone URL: must not contain whitespace' };
+    }
+    // Reject git argument injection: URLs starting with -- are treated as options by git
+    if (repoUrl.startsWith('--')) {
+      return { ok: false, error: 'Invalid clone URL: must not start with --' };
+    }
+    if (!SAFE_REPO_URL_RE.test(repoUrl)) {
+      return { ok: false, error: 'Invalid clone URL: only https://github.com/<owner>/<repo> URLs are allowed' };
+    }
+    if (!SAFE_REPO_NAME_RE.test(repoName)) {
+      return { ok: false, error: 'Invalid repo name: only letters, digits, dots, underscores, and hyphens are allowed' };
+    }
+    // Prevent path traversal in repoName
+    if (repoName.includes('..') || repoName.includes('/') || repoName.includes('\\')) {
+      return { ok: false, error: 'Invalid repo name: must not contain path traversal sequences' };
+    }
+    return { ok: true, url: repoUrl, name: repoName };
+  }
+
   ipcMain.handle(IPC.CLONE_REPO, async (_event, repoUrl: string, repoName: string) => {
     try {
+      const validation = validateCloneInputs(repoUrl, repoName);
+      if (!validation.ok) {
+        return { ok: false, error: validation.error };
+      }
+      const safeUrl = validation.url;
+      const safeName = validation.name;
+
       const { filePaths, canceled } = await dialog.showOpenDialog({
         title: 'Choose Clone Destination',
         properties: ['openDirectory', 'createDirectory'],
@@ -1127,7 +1412,7 @@ export function registerIpcHandlers(): void {
       const targetDir = filePaths[0];
 
       return new Promise((resolve) => {
-        const proc = spawn('git', ['clone', repoUrl, repoName], {
+        const proc = spawn('git', ['clone', safeUrl, safeName], {
           cwd: targetDir,
           stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -1137,11 +1422,11 @@ export function registerIpcHandlers(): void {
 
         proc.on('close', (code) => {
           if (code === 0) {
-            resolve({ ok: true, data: { canceled: false, success: true, path: `${targetDir}\\${repoName}` } });
+            resolve({ ok: true, data: { canceled: false, success: true, path: join(targetDir, repoName) } });
           } else {
             // git clone writes progress to stderr, so check if it actually cloned
             if (stderr.includes('Receiving objects') && !stderr.includes('fatal:')) {
-              resolve({ ok: true, data: { canceled: false, success: true, path: `${targetDir}\\${repoName}` } });
+              resolve({ ok: true, data: { canceled: false, success: true, path: join(targetDir, repoName) } });
             } else {
               resolve({ ok: false, error: `Clone failed: ${stderr.slice(-200)}` });
             }
