@@ -12,6 +12,24 @@ const DEFAULT_WEIGHTS: Required<WeightEmphasis> = {
   licenseCompatibility: 0.10,
 };
 
+/**
+ * Intent-specific weight emphasis presets.
+ *
+ * Niche domains (retail-pos, password-manager, self-hosted, etc.) tend to have
+ * small, domain-specific repos that get outranked by high-star repos with
+ * tangential topic overlap. For these intents, boost semanticMatch and
+ * de-emphasize starsScore so domain relevance wins over popularity.
+ */
+const INTENT_EMPHASIS: Record<string, WeightEmphasis> = {
+  'retail-pos': { semanticMatch: 3.0, starsScore: 0.3, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'password-manager': { semanticMatch: 1.8, starsScore: 0.7, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'self-hosted': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'monitoring': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'messaging': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'data-visualization': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'testing': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+};
+
 function computeNormalized(emphasis: WeightEmphasis): Required<WeightEmphasis> {
   const w = {
     semanticMatch: DEFAULT_WEIGHTS.semanticMatch * emphasis.semanticMatch,
@@ -74,10 +92,21 @@ export class RankingEngine {
     // Credibility penalty: repos with fewer than 100 stars get their semantic
     // match discounted. Prevents keyword-stuffed micro-repos from outranking
     // established projects with slightly different wording.
+    //
+    // The penalty is scaled by the semantic score itself: repos with high
+    // semantic match (many token hits) are penalized less. This ensures niche
+    // domain repos that genuinely match the query (e.g., a canteen management
+    // system with 38 stars matching 9 tokens) aren't crushed by the same
+    // penalty as a keyword-stuffed repo matching 1-2 tokens.
+    // - semantic >= 0.5: penalty halved (0.6 → 0.8, 0.85 → 0.925)
+    // - semantic >= 0.3: penalty reduced by 1/3 (0.6 → 0.73, 0.85 → 0.90)
+    // - semantic <  0.3: full penalty (0.6, 0.85)
     if (repo.stars < 100) {
-      semanticMatch *= 0.6; // 40% penalty
+      const factor = semanticMatch >= 0.5 ? 0.8 : semanticMatch >= 0.3 ? 0.73 : 0.6;
+      semanticMatch *= factor;
     } else if (repo.stars < 500) {
-      semanticMatch *= 0.85; // 15% penalty
+      const factor = semanticMatch >= 0.5 ? 0.925 : semanticMatch >= 0.3 ? 0.90 : 0.85;
+      semanticMatch *= factor;
     }
 
     // Use pre-computed weights when available (computed once in rank() instead of per-repo)
@@ -114,8 +143,40 @@ export class RankingEngine {
     const candidates = repos.filter((r) => !r.archived);
     const tokens = this.tokenize(criteria.keywords);
 
-    // Compute normalized weights ONCE instead of per-repo
-    const precomputedWeights = emphasis ? computeNormalized(emphasis) : DEFAULT_WEIGHTS;
+    // ── Expand token set with multilingual fields ──
+    // Vietnamese queries produce expandedKeywords and technicalConcepts through
+    // deterministic preprocessing. Including these in the token set gives the
+    // ranking engine richer search signals — repos whose metadata matches
+    // "observability" or "self-hosted" (expanded from "giám sát" or "tự chạy")
+    // get scored higher even when the raw LLM keywords are short/generic.
+    // No extra API calls — pure local token expansion.
+    if (criteria.expandedKeywords && criteria.expandedKeywords.length > 0) {
+      const expandedTokens = this.tokenize(criteria.expandedKeywords);
+      for (const t of expandedTokens) {
+        if (!tokens.includes(t)) tokens.push(t);
+      }
+    }
+    if (criteria.technicalConcepts && criteria.technicalConcepts.length > 0) {
+      for (const tc of criteria.technicalConcepts) {
+        const c = tc.toLowerCase().trim();
+        if (c.length >= 2) {
+          // Split hyphenated concepts into component tokens too —
+          // "password-manager" should match both "password" and "manager"
+          // individually in descriptions, not just the hyphenated form.
+          if (!tokens.includes(c)) tokens.push(c);
+          const parts = c.split(/[\s\-_]+/).filter(p => p.length >= 2);
+          for (const p of parts) {
+            if (!tokens.includes(p)) tokens.push(p);
+          }
+        }
+      }
+    }
+
+    // Compute normalized weights ONCE instead of per-repo.
+    // When no explicit emphasis is passed, apply intent-specific emphasis
+    // for niche domains where semantic relevance should dominate over stars.
+    const autoEmphasis = emphasis ?? INTENT_EMPHASIS[criteria.intent];
+    const precomputedWeights = autoEmphasis ? computeNormalized(autoEmphasis) : DEFAULT_WEIGHTS;
 
     // Pre-compute lowercase metadata for all candidates (avoids repeated .toLowerCase() per scoring signal)
     const precomputedMap = new Map<number, PrecomputedRepo>();
@@ -138,8 +199,8 @@ export class RankingEngine {
 
     // Heap-based top-K: O(n log k) instead of O(n log n)
     const heap: { repo: GitHubRepo; score: RelevanceScore }[] = [];
-    // Only yield for very large datasets — 50 repos completes in microseconds
-    const BATCH_SIZE = 100;
+    // Yield event loop every 100 repos to avoid blocking on large datasets
+    const YIELD_INTERVAL = 100;
 
     for (let i = 0; i < candidates.length; i++) {
       const repo = candidates[i];
@@ -157,7 +218,7 @@ export class RankingEngine {
       }
 
       // Yield event loop only for large datasets
-      if (BATCH_SIZE >= 100 && (i + 1) % BATCH_SIZE === 0) {
+      if ((i + 1) % YIELD_INTERVAL === 0) {
         await new Promise((r) => setImmediate(r));
       }
     }
@@ -286,6 +347,12 @@ export class RankingEngine {
     'web-app': ['web', 'http', 'rest', 'api', 'frontend', 'backend', 'fullstack', 'ssr', 'spa', 'nextjs', 'nuxt', 'svelte'],
     'mobile-app': ['mobile', 'ios', 'android', 'react-native', 'flutter', 'swift', 'kotlin'],
     'library': ['library', 'lib', 'package', 'module', 'sdk', 'framework'],
+    'data-visualization': ['data-visualization', 'dataviz', 'chart', 'charts', 'visualization', 'visualization-library', 'plot', 'plotting', 'graph', 'd3', 'dashboard'],
+    // ── Retail / POS / hospitality / food-service ──
+    // Repos with these topics are business-application repos (POS systems,
+    // inventory managers, restaurant tools) — they should rank higher for
+    // Vietnamese queries like "công cụ quản lý căn tin" than generic DevOps tools.
+    'retail-pos': ['pos', 'point-of-sale', 'retail', 'ecommerce', 'e-commerce', 'inventory', 'restaurant', 'cafe', 'canteen', 'food-service', 'store', 'shop', 'marketplace', 'crm', 'invoice', 'billing', 'payment', 'checkout', 'order-management', 'warehouse', 'staff-management', 'attendance'],
   };
 
   private baseSemanticScore(repo: GitHubRepo, criteria: SearchCriteria, tokens: string[], precomputed?: PrecomputedRepo): number {

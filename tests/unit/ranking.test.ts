@@ -816,4 +816,292 @@ describe('RankingEngine with Vietnamese criteria', () => {
       expect(viScore.semanticMatch).toBeGreaterThanOrEqual(enScore.semanticMatch);
     });
   });
+
+  // ── Data-visualization intent + topic cluster ──
+
+  describe('data-visualization intent ranking', () => {
+    it('boosts repos with data-visualization topics when intent is data-visualization', () => {
+      const viCriteria: SearchCriteria = {
+        keywords: ['đồ thị', 'visualization'],
+        technologies: [],
+        intent: 'data-visualization',
+        useCase: 'thư viện vẽ biểu đồ',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        englishTranslation: 'chart visualization library',
+        technicalConcepts: ['visualization', 'chart'],
+        originalQuery: 'thư viện vẽ biểu đồ',
+      };
+
+      const repoWithVizTopics = makeMockRepo({
+        full_name: 'd3/d3',
+        description: 'Data-Driven Documents — a visualization library',
+        stars: 100000,
+        language: 'JavaScript',
+        topics: ['data-visualization', 'visualization', 'chart', 'd3', 'svg'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const repoWithoutVizTopics = makeMockRepo({
+        full_name: 'random/lib',
+        description: 'A generic library',
+        stars: 100000,
+        language: 'JavaScript',
+        topics: [],
+        updated_at: new Date().toISOString(),
+      });
+
+      const scoreWith = engine.scoreRepo(repoWithVizTopics, viCriteria, null, 'chart visualization');
+      const scoreWithout = engine.scoreRepo(repoWithoutVizTopics, viCriteria, null, 'chart visualization');
+
+      // Repo with data-visualization topics should score higher
+      expect(scoreWith.semanticMatch).toBeGreaterThan(scoreWithout.semanticMatch);
+      expect(scoreWith.total).toBeGreaterThan(scoreWithout.total);
+    });
+
+    it('data-visualization intent boosts d3/chartjs repos above generic ones', () => {
+      const viCriteria: SearchCriteria = {
+        keywords: ['trực quan', 'dữ liệu'],
+        technologies: [],
+        intent: 'data-visualization',
+        useCase: 'thư viện trực quan hóa dữ liệu',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        englishTranslation: 'data visualization library',
+        technicalConcepts: ['data-visualization', 'chart'],
+        originalQuery: 'thư viện trực quan hóa dữ liệu',
+      };
+
+      const d3Repo = makeMockRepo({
+        full_name: 'd3/d3',
+        description: 'Bring data to life with SVG, Canvas and HTML',
+        stars: 100000,
+        topics: ['data-visualization', 'visualization', 'd3'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const unrelatedRepo = makeMockRepo({
+        full_name: 'some/tool',
+        description: 'A command-line tool for file processing',
+        stars: 100000,
+        topics: ['cli', 'file-processing'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const d3Score = engine.scoreRepo(d3Repo, viCriteria, null, 'data visualization library');
+      const unrelatedScore = engine.scoreRepo(unrelatedRepo, viCriteria, null, 'data visualization library');
+
+      expect(d3Score.semanticMatch).toBeGreaterThan(unrelatedScore.semanticMatch);
+    });
+  });
+
+  // ── rank() expands token set with Vietnamese multilingual fields ──
+  describe('rank expands token set with multilingual fields', () => {
+    it('tokenizes expandedKeywords into the scoring token set', async () => {
+      const viCriteria: SearchCriteria = {
+        keywords: ['monitoring'],
+        technologies: [],
+        intent: 'monitoring',
+        useCase: 'giám sát',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        expandedKeywords: ['observability', 'watch'],
+        technicalConcepts: ['monitoring', 'alerting'],
+      };
+
+      const matchedRepo = makeMockRepo({
+        id: 1,
+        full_name: 'prometheus/prometheus',
+        description: 'Observability platform with watch capabilities and alerting',
+        stars: 50000,
+        language: 'Go',
+        topics: ['observability', 'alerting', 'watch'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const unmatchedRepo = makeMockRepo({
+        id: 2,
+        full_name: 'some/notes',
+        description: 'A simple note-taking app',
+        stars: 50000,
+        language: 'Go',
+        topics: ['notes'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const ranked = await engine.rank(
+        [matchedRepo, unmatchedRepo],
+        viCriteria,
+        new Map(),
+        'giám sát',
+        10,
+      );
+
+      // The matched repo should rank first because expandedKeywords
+      // tokens like "observability" and "alerting" are now in the token set
+      expect(ranked[0].repo.id).toBe(1);
+      expect(ranked[0].score.total).toBeGreaterThan(ranked[1].score.total);
+    });
+
+    it('technicalConcepts tokens improve ranking for single-word Vietnamese queries', async () => {
+      // Edge case: LLM produces a single generic keyword like "tool"
+      // from "quản lý mật khẩu". With technicalConcepts in the token set,
+      // the ranking engine still has "password-manager" and "credential"
+      // as scoring signals.
+      const viCriteria: SearchCriteria = {
+        keywords: ['tool'],
+        technologies: [],
+        intent: 'password-manager',
+        useCase: 'quản lý mật khẩu',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        englishTranslation: 'password manager tool',
+        technicalConcepts: ['password-manager', 'credential'],
+        expandedKeywords: ['management', 'manager', 'admin'],
+        originalQuery: 'quản lý mật khẩu',
+      };
+
+      const passwordRepo = makeMockRepo({
+        id: 1,
+        full_name: 'bitwarden/server',
+        description: 'Password manager for teams and enterprises',
+        stars: 12000,
+        topics: ['password', 'credential', 'security'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const unrelatedRepo = makeMockRepo({
+        id: 2,
+        full_name: 'some/cli-tool',
+        description: 'A general-purpose CLI tool',
+        stars: 12000,
+        topics: ['cli', 'terminal'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const ranked = await engine.rank(
+        [passwordRepo, unrelatedRepo],
+        viCriteria,
+        new Map(),
+        'quản lý mật khẩu',
+        10,
+      );
+
+      // Password manager should rank first even with only "tool" keyword,
+      // because "password-manager" and "credential" are in the token set
+      expect(ranked[0].repo.id).toBe(1);
+      expect(ranked[0].score.total).toBeGreaterThan(ranked[1].score.total);
+    });
+  });
+
+  // ── Retail / POS intent-topic cluster alignment ──
+  // Regression test: "công cụ quản lý căn tin" should rank a POS/canteen repo
+  // higher than a generic DevOps tool, even when both have similar star counts.
+  describe('retail-pos intent ranking', () => {
+    it('boosts repos with retail/POS topics when intent is retail-pos', () => {
+      const viCriteria: SearchCriteria = {
+        keywords: ['canteen-management', 'management'],
+        technologies: [],
+        intent: 'retail-pos',
+        useCase: 'công cụ quản lý căn tin',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        englishTranslation: 'canteen management tool',
+        technicalConcepts: ['canteen', 'food-service', 'management'],
+        expandedKeywords: ['canteen', 'cafeteria', 'food-service', 'management', 'manager', 'admin'],
+        originalQuery: 'công cụ quản lý căn tin',
+      };
+
+      const posRepo = makeMockRepo({
+        id: 1,
+        full_name: 'example/canteen-pos',
+        description: 'Canteen and food-service management system with POS',
+        stars: 500,
+        topics: ['pos', 'point-of-sale', 'canteen', 'food-service', 'inventory'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const devopsRepo = makeMockRepo({
+        id: 2,
+        full_name: 'example/devops-cli',
+        description: 'A general-purpose DevOps CLI tool for infrastructure',
+        stars: 500,
+        topics: ['cli', 'devops', 'infrastructure'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const posScore = engine.scoreRepo(posRepo, viCriteria, null, 'công cụ quản lý căn tin');
+      const devopsScore = engine.scoreRepo(devopsRepo, viCriteria, null, 'công cụ quản lý căn tin');
+
+      // The POS/canteen repo should score higher — its topics overlap the
+      // retail-pos intent cluster and its description matches canteen/food-service.
+      expect(posScore.semanticMatch).toBeGreaterThan(devopsScore.semanticMatch);
+      expect(posScore.total).toBeGreaterThan(devopsScore.total);
+    });
+  });
+
+  // ── Intent-based automatic emphasis for niche domains ──
+  // Niche domains (retail-pos) have small repos that get outranked by high-star
+  // repos with tangential topic overlap. The ranking engine applies automatic
+  // semanticMatch emphasis for these intents so domain relevance wins over
+  // stars. Also, the credibility penalty is reduced for repos with high semantic
+  // match so niche domain repos matching many tokens aren't crushed.
+  describe('intent-based emphasis for niche domains', () => {
+    it('ranks a domain-specific small repo above a high-star tangential repo for retail-pos intent', async () => {
+      const viCriteria: SearchCriteria = {
+        keywords: ['point-of-sale inventory', 'canteen POS system', 'retail sales management'],
+        technologies: [],
+        intent: 'retail-pos',
+        useCase: 'công cụ quản lý căn tin',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+        englishTranslation: 'canteen management POS system',
+        technicalConcepts: ['point-of-sale', 'inventory', 'pos', 'retail'],
+        expandedKeywords: ['canteen management POS system', 'point-of-sale', 'inventory', 'pos', 'retail'],
+        originalQuery: 'tôi muốn một công cụ quản lý căn tin',
+      };
+
+      // btcpayserver: 6300 stars, Bitcoin payment processor, topic "pos"
+      // Only matches 1 token ("pos") but has high stars
+      const btcpayserver = makeMockRepo({
+        id: 1,
+        full_name: 'btcpayserver/btcpayserver',
+        description: 'Accept Bitcoin payments. Free, open-source crypto-currency processor.',
+        stars: 6300,
+        topics: ['bitcoin', 'payment', 'pos', 'cryptocurrency'],
+        updated_at: new Date().toISOString(),
+      });
+
+      // canteen repo: 38 stars, matches 9 tokens, genuine domain match
+      const canteenRepo = makeMockRepo({
+        id: 2,
+        full_name: 'example/canteen-management-system',
+        description: 'Canteen management system with point-of-sale, inventory tracking, and food ordering',
+        stars: 38,
+        topics: ['canteen', 'pos', 'inventory', 'food-service', 'restaurant'],
+        updated_at: new Date().toISOString(),
+      });
+
+      const ranked = await engine.rank(
+        [btcpayserver, canteenRepo],
+        viCriteria,
+        new Map(),
+        'công cụ quản lý căn tin',
+        10,
+      );
+
+      // The canteen repo should rank #1 — it genuinely matches the user's
+      // intent despite having far fewer stars than the Bitcoin payment processor.
+      expect(ranked[0].repo.id).toBe(2);
+      expect(ranked[0].score.total).toBeGreaterThan(ranked[1].score.total);
+      // Semantic match should be higher for the canteen repo
+      expect(ranked[0].score.semanticMatch).toBeGreaterThan(ranked[1].score.semanticMatch);
+    });
+  });
 });
