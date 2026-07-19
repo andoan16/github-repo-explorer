@@ -10,6 +10,7 @@ import {
   quickVietnameseTranslateStructured,
   normalizeDiacritics,
   ENGLISH_GENERIC_TERMS,
+  normalizeVietnameseQuery,
 } from '../../src/main/search/vietnamese';
 import { createMockOllamaClient } from '../mocks/ollama';
 
@@ -389,6 +390,36 @@ describe('detectVietnameseRefinement', () => {
     // This has Vietnamese diacritics but no matching refinement pattern
     expect(result).toBeNull();
   });
+
+  // ── Vietnamese star threshold filter ──
+
+  it('detects "trên 5000 sao" as star threshold filter', () => {
+    const result = detectVietnameseRefinement('trên 5000 sao');
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('filter');
+    expect(result!.minStars).toBe(5000);
+  });
+
+  it('detects "hơn 1000 sao" as star threshold filter', () => {
+    const result = detectVietnameseRefinement('hơn 1000 sao');
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('filter');
+    expect(result!.minStars).toBe(1000);
+  });
+
+  it('detects "10k sao" as filter with k multiplier', () => {
+    const result = detectVietnameseRefinement('10k sao');
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('filter');
+    expect(result!.minStars).toBe(10000);
+  });
+
+  it('detects ">5000" as filter', () => {
+    const result = detectVietnameseRefinement('>5000');
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('filter');
+    expect(result!.minStars).toBe(5000);
+  });
 });
 
 // ── extractTechTerms ──
@@ -555,13 +586,13 @@ describe('expandGithubSynonyms', () => {
     expect(selfHostedCount).toBeLessThanOrEqual(1);
   });
 
-  it('caps at 6 expansions', () => {
+  it('caps at 10 expansions', () => {
     // Use a query that matches many synonyms
     const expanded = expandGithubSynonyms(
       'quản lý giám sát cơ sở dữ liệu bảo mật triển khai tự động',
       [],
     );
-    expect(expanded.length).toBeLessThanOrEqual(6);
+    expect(expanded.length).toBeLessThanOrEqual(10);
   });
 
   // ── New synonym expansions (added vocabulary) ──
@@ -806,6 +837,99 @@ describe('quickVietnameseTranslateStructured', () => {
       expect(result.techTerms.every(t => t.toLowerCase() !== 'fewer')).toBe(true);
     }
   });
+
+  // ── dictionaryConcepts tests ──
+
+  it('returns dictionaryConcepts for pure Vietnamese terms', () => {
+    const result = quickVietnameseTranslateStructured('giám sát máy chủ');
+    expect(result).not.toBeNull();
+    // Should include domain concepts from dictionary (monitoring, server, etc.)
+    expect(result!.dictionaryConcepts.length).toBeGreaterThan(0);
+    // "monitoring" comes from "giám sát", filtered from generic terms
+    expect(result!.dictionaryConcepts).toContain('monitoring');
+    // "observability" is a secondary translation from "giám sát"
+    expect(result!.dictionaryConcepts).toContain('observability');
+    // "server" and "host" come from "máy chủ"
+    expect(result!.dictionaryConcepts).toContain('server');
+    expect(result!.dictionaryConcepts).toContain('host');
+  });
+
+  it('filters generic English terms from dictionaryConcepts', () => {
+    // "công cụ" → "tool" | "utility" (both generic, filtered from primary
+    // translation but still appear in dictionaryConcepts as search concepts)
+    // "quản lý" → "management" | "admin" (neither in ENGLISH_GENERIC_TERMS currently)
+    const result = quickVietnameseTranslateStructured('công cụ quản lý');
+    expect(result).not.toBeNull();
+    // "tool" and "utility" are generic terms — they're in dictionaryConcepts
+    // but filtered from the primary translation by ENGLISH_GENERIC_TERMS.
+    expect(result!.dictionaryConcepts).toContain('management');
+    expect(result!.dictionaryConcepts).toContain('admin');
+  });
+
+  it('returns empty dictionaryConcepts when no dict entries match', () => {
+    // English-only text with no Vietnamese diacritics should return null
+    expect(quickVietnameseTranslateStructured('docker kubernetes')).toBeNull();
+  });
+
+  it('dictionaryConcepts carry domain signal when techTerms is empty for pure VN', () => {
+    // Pure Vietnamese with no English tech terms mixed in
+    const result = quickVietnameseTranslateStructured('quản lý mật khẩu tự host');
+    expect(result).not.toBeNull();
+    expect(result!.techTerms.length).toBe(0); // no English tech words like "docker"
+    // dictionaryConcepts should carry the domain signal
+    expect(result!.dictionaryConcepts.length).toBeGreaterThanOrEqual(3);
+    expect(result!.dictionaryConcepts).toContain('password manager');
+    expect(result!.dictionaryConcepts).toContain('self-hosted');
+  });
+
+  // ── Retail / POS / hospitality domain regression tests ──
+  // These guard against the bug where "công cụ quản lý căn tin" translated to
+  // "devops-tool management can tin" — irrelevant DevOps results + romanized
+  // garbage. The fix: 'công cụ' maps to generic tool/utility (not devops-tool),
+  // and retail/POS vocabulary was added to the dictionary.
+  it('translates "công cụ quản lý căn tin" to canteen/food-service domain', () => {
+    const result = quickVietnameseTranslateStructured('công cụ quản lý căn tin');
+    expect(result).not.toBeNull();
+    // Translation must NOT contain devops-tool or romanized "can tin"
+    expect(result!.translation).not.toContain('devops-tool');
+    expect(result!.translation).not.toContain('can tin');
+    // Translation must contain the canteen domain term
+    expect(result!.translation).toMatch(/canteen|food-service/i);
+    // Intent should be retail-pos, not devops-tool or cli-tool
+    expect(result!.intent).toBe('retail-pos');
+  });
+
+  it('does not map "công cụ" to devops-tool intent for non-DevOps queries', () => {
+    // "công cụ bán hàng" (sales tool) should NOT produce devops-tool
+    const result = quickVietnameseTranslateStructured('công cụ bán hàng');
+    expect(result).not.toBeNull();
+    expect(result!.translation).not.toContain('devops-tool');
+    expect(result!.translation).toMatch(/pos|point-of-sale|sales|retail/i);
+    expect(result!.intent).toBe('retail-pos');
+  });
+
+  it('maps retail/POS vocabulary to English domain terms', () => {
+    const cases: Array<[string, RegExp]> = [
+      ['quản lý bán hàng', /sales-management|point-of-sale|pos/i],
+      ['quản lý tồn kho', /inventory-management|stock-management/i],
+      ['quản lý nhà hàng', /restaurant-management|restaurant-pos/i],
+      ['quản lý cửa hàng', /store-management|retail-management/i],
+    ];
+    for (const [vi, expected] of cases) {
+      const result = quickVietnameseTranslateStructured(vi);
+      expect(result).not.toBeNull();
+      expect(result!.translation).toMatch(expected);
+      expect(result!.intent).toBe('retail-pos');
+    }
+  });
+
+  it('preserves DevOps intent for actual DevOps "công cụ" queries', () => {
+    // "công cụ giám sát" should still be monitoring, not retail-pos
+    const result = quickVietnameseTranslateStructured('công cụ giám sát');
+    expect(result).not.toBeNull();
+    expect(result!.intent).toBe('monitoring');
+    expect(result!.translation).toMatch(/monitoring|observability/i);
+  });
 });
 
 // ── New VIETNAMESE_GITHUB_SYNONYMS entries ──
@@ -975,7 +1099,8 @@ describe('ENGLISH_GENERIC_TERMS', () => {
 
   it('contains English function words that add no search value', () => {
     expect(ENGLISH_GENERIC_TERMS.has('manager')).toBe(true);
-    expect(ENGLISH_GENERIC_TERMS.has('runner')).toBe(true);
+    // 'runner' intentionally excluded — legitimate CI/CD search term
+    expect(ENGLISH_GENERIC_TERMS.has('runner')).toBe(false);
     expect(ENGLISH_GENERIC_TERMS.has('service')).toBe(true);
   });
 
@@ -986,6 +1111,8 @@ describe('ENGLISH_GENERIC_TERMS', () => {
     expect(ENGLISH_GENERIC_TERMS.has('database')).toBe(false);
     expect(ENGLISH_GENERIC_TERMS.has('devops-tool')).toBe(false);
     expect(ENGLISH_GENERIC_TERMS.has('cli-tool')).toBe(false);
+    expect(ENGLISH_GENERIC_TERMS.has('runner')).toBe(false);
+    expect(ENGLISH_GENERIC_TERMS.has('engine')).toBe(false);
   });
 });
 
@@ -1086,6 +1213,50 @@ describe('VietnameseQueryExpander — new dictionary entries', () => {
 });
 
 // ── New TECH_TERMS entries ──
+
+// ── New dictionary entries — data-visualization, vpn, home-automation ──
+
+describe('VietnameseQueryExpander — data-visualization and new dictionary entries', () => {
+  it('translates "đồ thị" to chart/graph/visualization', async () => {
+    const expander = new VietnameseQueryExpander();
+    const result = await expander.expand('đồ thị kết quả');
+    expect(result).not.toBeNull();
+    const allConcepts = result!.technicalConcepts.join(' ').toLowerCase();
+    expect(allConcepts).toContain('chart');
+  });
+
+  it('translates "biểu đồ" to chart/visualization', async () => {
+    const expander = new VietnameseQueryExpander();
+    const result = await expander.expand('vẽ biểu đồ');
+    expect(result).not.toBeNull();
+    const allConcepts = result!.technicalConcepts.join(' ').toLowerCase();
+    expect(allConcepts).toContain('chart');
+  });
+
+  it('translates "mạng riêng ảo" to vpn/wireguard', async () => {
+    const expander = new VietnameseQueryExpander();
+    const result = await expander.expand('mạng riêng ảo');
+    expect(result).not.toBeNull();
+    const allConcepts = result!.technicalConcepts.join(' ').toLowerCase();
+    expect(allConcepts).toContain('vpn');
+  });
+
+  it('translates "nhà thông minh" to home-automation', async () => {
+    const expander = new VietnameseQueryExpander();
+    const result = await expander.expand('nhà thông minh');
+    expect(result).not.toBeNull();
+    const allConcepts = result!.technicalConcepts.join(' ').toLowerCase();
+    expect(allConcepts).toContain('home-automation');
+  });
+
+  it('translates "ghi chú" to notes/note-taking', async () => {
+    const expander = new VietnameseQueryExpander();
+    const result = await expander.expand('ứng dụng ghi chú');
+    expect(result).not.toBeNull();
+    const allConcepts = result!.technicalConcepts.join(' ').toLowerCase();
+    expect(allConcepts).toContain('notes');
+  });
+});
 
 describe('extractTechTerms — self-hosting tools', () => {
   it('extracts gitea as git-server', () => {
@@ -1415,14 +1586,19 @@ describe('classifyVietnameseIntent — Vietnamese developer query intents', () =
     expect(intent).toBe('self-hosted');
   });
 
-  it('classifies "trực quan dữ liệu" as library (data visualization)', () => {
+  it('classifies "trực quan dữ liệu" as data-visualization', () => {
     const intent = classifyVietnameseIntent('trực quan dữ liệu');
-    expect(intent).toBe('library');
+    expect(intent).toBe('data-visualization');
   });
 
-  it('classifies "biểu đồ" as library (charts)', () => {
+  it('classifies "biểu đồ" as data-visualization (charts)', () => {
     const intent = classifyVietnameseIntent('thư viện biểu đồ');
-    expect(intent).toBe('library');
+    expect(intent).toBe('data-visualization');
+  });
+
+  it('classifies "vẽ đồ thị" as data-visualization', () => {
+    const intent = classifyVietnameseIntent('công cụ vẽ đồ thị');
+    expect(intent).toBe('data-visualization');
   });
 
   it('classifies "quản lý trạng thái" as library (state management)', () => {
@@ -1528,6 +1704,55 @@ describe('extractTechTerms — additional terms', () => {
     expect(terms).toContain('onnx');
     expect(terms).toContain('inference');
   });
+
+  // ── New TECH_TERMS entries (data-visualization, self-hosting favorites) ──
+
+  it('extracts d3 as data-visualization', () => {
+    const terms = extractTechTerms('d3 chart library');
+    expect(terms).toContain('d3');
+    expect(terms).toContain('data-visualization');
+  });
+
+  it('extracts chartjs as data-visualization', () => {
+    const terms = extractTechTerms('chartjs react dashboard');
+    expect(terms).toContain('chartjs');
+    expect(terms).toContain('data-visualization');
+  });
+
+  it('extracts plotly as data-visualization', () => {
+    const terms = extractTechTerms('plotly python graph');
+    expect(terms).toContain('plotly');
+    expect(terms).toContain('data-visualization');
+  });
+
+  it('extracts vaultwarden as password-manager', () => {
+    const terms = extractTechTerms('vaultwarden self-hosted password');
+    expect(terms).toContain('vaultwarden');
+    expect(terms).toContain('password-manager');
+  });
+
+  it('extracts wireguard as vpn', () => {
+    const terms = extractTechTerms('wireguard vpn server');
+    expect(terms).toContain('wireguard');
+    expect(terms).toContain('vpn');
+  });
+
+  it('extracts homeassistant as home-automation', () => {
+    const terms = extractTechTerms('homeassistant smart home');
+    expect(terms).toContain('home-assistant');
+    expect(terms).toContain('home-automation');
+  });
+
+  it('extracts metabase as analytics/dashboard', () => {
+    const terms = extractTechTerms('metabase analytics dashboard');
+    expect(terms).toContain('metabase');
+    expect(terms).toContain('analytics');
+  });
+
+  it('extracts postgrest as api', () => {
+    const terms = extractTechTerms('postgrest api');
+    expect(terms).toContain('postgrest');
+  });
 });
 
 // ── New VIETNAMESE_GITHUB_SYNONYMS (session 2) ──
@@ -1589,5 +1814,338 @@ describe('expandGithubSynonyms — additional compound synonyms', () => {
     const expanded = expandGithubSynonyms('hệ thống phân tán', ['distributed']);
     expect(expanded).toContain('decentralized');
     expect(expanded).toContain('p2p');
+  });
+
+  // ── New synonym entries (data-visualization, vpn, home-automation, etc.) ──
+
+  it('expands "đồ thị" to chart/graph/visualization synonyms', () => {
+    const expanded = expandGithubSynonyms('vẽ đồ thị dữ liệu', []);
+    expect(expanded).toContain('chart');
+    expect(expanded).toContain('visualization');
+  });
+
+  it('expands "biểu đồ" to chart/visualization synonyms', () => {
+    const expanded = expandGithubSynonyms('biểu đồ kết quả', []);
+    expect(expanded).toContain('chart');
+    expect(expanded).toContain('plot');
+  });
+
+  it('expands "mạng riêng ảo" to vpn/wireguard synonyms', () => {
+    const expanded = expandGithubSynonyms('mạng riêng ảo', []);
+    expect(expanded).toContain('vpn');
+    expect(expanded).toContain('wireguard');
+  });
+
+  it('expands "nhà thông minh" to home-automation synonyms', () => {
+    const expanded = expandGithubSynonyms('nhà thông minh', []);
+    expect(expanded).toContain('home-automation');
+    expect(expanded).toContain('smart-home');
+  });
+
+  it('expands "ghi chú" to notes synonyms', () => {
+    const expanded = expandGithubSynonyms('ứng dụng ghi chú', []);
+    expect(expanded).toContain('notes');
+    expect(expanded).toContain('note-taking');
+  });
+
+  it('expands "hệ thống wiki" to wiki/knowledge-base synonyms', () => {
+    const expanded = expandGithubSynonyms('hệ thống wiki', []);
+    expect(expanded).toContain('wiki');
+    expect(expanded).toContain('knowledge-base');
+  });
+});
+
+// ── normalizeVietnameseQuery ──
+
+describe('normalizeVietnameseQuery', () => {
+  it('strips "tôi muốn tìm một" prefix', () => {
+    const result = normalizeVietnameseQuery('tôi muốn tìm một công cụ giám sát');
+    expect(result).toBe('công cụ giám sát');
+  });
+
+  it('strips "tôi muốn một" prefix', () => {
+    const result = normalizeVietnameseQuery('tôi muốn một công cụ giám sát');
+    expect(result).toBe('công cụ giám sát');
+  });
+
+  it('strips "tôi cần tìm một" prefix', () => {
+    const result = normalizeVietnameseQuery('tôi cần tìm một thư viện đồ thị');
+    expect(result).toBe('thư viện đồ thị');
+  });
+
+  it('strips "tôi đang tìm" prefix', () => {
+    const result = normalizeVietnameseQuery('tôi đang tìm công cụ quản lý mật khẩu');
+    expect(result).toBe('công cụ quản lý mật khẩu');
+  });
+
+  it('strips "cho tôi một" prefix', () => {
+    const result = normalizeVietnameseQuery('cho tôi một máy chủ email');
+    expect(result).toBe('máy chủ email');
+  });
+
+  it('strips "bạn có thể giúp tôi tìm" prefix', () => {
+    const result = normalizeVietnameseQuery('bạn có thể giúp tôi tìm nền tảng giám sát');
+    expect(result).toBe('nền tảng giám sát');
+  });
+
+  it('strips "làm ơn tìm" prefix', () => {
+    const result = normalizeVietnameseQuery('làm ơn tìm công cụ sao lưu');
+    expect(result).toBe('công cụ sao lưu');
+  });
+
+  it('returns unchanged for queries without filler', () => {
+    const result = normalizeVietnameseQuery('công cụ giám sát máy chủ');
+    expect(result).toBe('công cụ giám sát máy chủ');
+  });
+
+  it('returns unchanged for queries with too-short remainder (safety)', () => {
+    // "tôi muốn abc" → remainder "abc" < 4 chars, not meaningful
+    const result = normalizeVietnameseQuery('tôi muốn abc');
+    expect(result).toBe('tôi muốn abc');
+  });
+
+  it('returns unchanged for English queries', () => {
+    // Not Vietnamese, but the function is pure text processing
+    const result = normalizeVietnameseQuery('I want a CI/CD tool');
+    // "I want" doesn't match Vietnamese filler patterns, so unchanged
+    expect(result).toBe('I want a CI/CD tool');
+  });
+});
+
+// ── ENGLISH_GENERIC_TERMS: runner/engine exclusion ──
+
+describe('ENGLISH_GENERIC_TERMS (runner/engine not filtered)', () => {
+  it('does NOT filter "runner" (legitimate CI/CD term)', () => {
+    expect(ENGLISH_GENERIC_TERMS.has('runner')).toBe(false);
+  });
+
+  it('does NOT filter "engine" (legitimate compute term)', () => {
+    expect(ENGLISH_GENERIC_TERMS.has('engine')).toBe(false);
+  });
+
+  it('still filters "system" (too generic)', () => {
+    expect(ENGLISH_GENERIC_TERMS.has('system')).toBe(true);
+  });
+
+  it('still filters "tool" (too generic)', () => {
+    expect(ENGLISH_GENERIC_TERMS.has('tool')).toBe(true);
+  });
+});
+
+// ── New high-frequency Vietnamese dictionary entries (added 2026-06-07) ──
+
+describe('expandGithubSynonyms — high-frequency entries', () => {
+  it('expands "người dùng" to user synonyms', () => {
+    const keywords = expandGithubSynonyms('người dùng', ['user']);
+    expect(keywords).toContain('user-management');
+    expect(keywords).toContain('identity');
+  });
+
+  it('expands "dịch vụ" to service synonyms', () => {
+    const keywords = expandGithubSynonyms('dịch vụ', ['service']);
+    expect(keywords).toContain('microservice');
+    expect(keywords).toContain('api');
+  });
+
+  it('expands "truy cập" to access synonyms', () => {
+    const keywords = expandGithubSynonyms('truy cập', ['access']);
+    expect(keywords).toContain('access-control');
+    expect(keywords).toContain('gateway');
+  });
+
+  it('expands "tài khoản" to account synonyms', () => {
+    const keywords = expandGithubSynonyms('tài khoản', ['account']);
+    expect(keywords).toContain('user-account');
+    expect(keywords).toContain('profile');
+  });
+
+  it('expands "quản trị" to admin synonyms', () => {
+    const keywords = expandGithubSynonyms('quản trị', ['admin']);
+    expect(keywords).toContain('administration');
+    expect(keywords).toContain('dashboard');
+  });
+
+  it('expands "đăng ký" to registration synonyms', () => {
+    const keywords = expandGithubSynonyms('đăng ký', ['registration']);
+    expect(keywords).toContain('signup');
+    expect(keywords).toContain('onboarding');
+  });
+
+  it('expands "dịch vụ web" to web-service synonyms', () => {
+    const keywords = expandGithubSynonyms('dịch vụ web', ['web-service']);
+    expect(keywords).toContain('rest-api');
+    expect(keywords).toContain('api');
+  });
+
+  it('expands "xác thực người dùng" to auth synonyms', () => {
+    const keywords = expandGithubSynonyms('xác thực người dùng', ['user-authentication']);
+    expect(keywords).toContain('auth');
+    expect(keywords).toContain('login');
+  });
+
+  it('expands "xác thực hai lớp" to 2fa synonyms', () => {
+    const keywords = expandGithubSynonyms('xác thực hai lớp', ['2fa']);
+    expect(keywords).toContain('mfa');
+    expect(keywords).toContain('two-factor-auth');
+  });
+
+  it('expands "quản lý người dùng" to user-mgmt synonyms', () => {
+    const keywords = expandGithubSynonyms('quản lý người dùng', ['user-management']);
+    expect(keywords).toContain('identity-management');
+    expect(keywords).toContain('iam');
+  });
+
+  it('expands "quản lý truy cập" to access-control synonyms', () => {
+    const keywords = expandGithubSynonyms('quản lý truy cập', ['access-control']);
+    expect(keywords).toContain('rbac');
+    expect(keywords).toContain('permissions');
+  });
+
+  it('expands "quản trị hệ thống" to sysadmin synonyms', () => {
+    const keywords = expandGithubSynonyms('quản trị hệ thống', ['system-administration']);
+    expect(keywords).toContain('sysadmin');
+    expect(keywords).toContain('ops');
+  });
+
+  it('expands "đăng ký dịch vụ" to service-registry synonyms', () => {
+    const keywords = expandGithubSynonyms('đăng ký dịch vụ', ['service-registry']);
+    expect(keywords).toContain('service-discovery');
+    expect(keywords).toContain('consul');
+  });
+});
+
+describe('classifyVietnameseIntent — high-frequency entries', () => {
+  it('classifies "quản lý người dùng" as authentication', () => {
+    const intent = classifyVietnameseIntent('quản lý người dùng');
+    expect(intent).toBe('authentication');
+  });
+
+  it('classifies "xác thực người dùng" as authentication', () => {
+    const intent = classifyVietnameseIntent('xác thực người dùng oauth');
+    expect(intent).toBe('authentication');
+  });
+
+  it('classifies "xác thực hai lớp" as authentication', () => {
+    const intent = classifyVietnameseIntent('xác thực hai lớp');
+    expect(intent).toBe('authentication');
+  });
+
+  it('classifies "quản lý tài khoản" as authentication', () => {
+    const intent = classifyVietnameseIntent('quản lý tài khoản người dùng');
+    expect(intent).toBe('authentication');
+  });
+
+  it('classifies "quản lý truy cập" as security-tool', () => {
+    const intent = classifyVietnameseIntent('quản lý truy cập hệ thống');
+    expect(intent).toBe('security-tool');
+  });
+
+  it('classifies "dịch vụ vi mô" as devops-tool', () => {
+    const intent = classifyVietnameseIntent('dịch vụ vi mô');
+    expect(intent).toBe('devops-tool');
+  });
+
+  it('classifies "đăng ký dịch vụ" as devops-tool', () => {
+    const intent = classifyVietnameseIntent('đăng ký dịch vụ consul');
+    expect(intent).toBe('devops-tool');
+  });
+
+  it('classifies "dịch vụ đám mây" as devops-tool', () => {
+    const intent = classifyVietnameseIntent('dịch vụ đám mây serverless');
+    expect(intent).toBe('devops-tool');
+  });
+
+  it('classifies "dịch vụ web" as api', () => {
+    const intent = classifyVietnameseIntent('dịch vụ web restful');
+    expect(intent).toBe('api');
+  });
+
+  it('classifies "quản trị hệ thống" as devops-tool', () => {
+    const intent = classifyVietnameseIntent('quản trị hệ thống linux');
+    expect(intent).toBe('devops-tool');
+  });
+});
+
+describe('quickVietnameseTranslateStructured — high-frequency entries', () => {
+  it('translates "quản lý người dùng" as user-management', () => {
+    const result = quickVietnameseTranslateStructured('quản lý người dùng');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('user-management');
+    expect(result!.dictionaryConcepts).toContain('user-management');
+    expect(result!.dictionaryConcepts).toContain('identity-management');
+  });
+
+  it('translates "dịch vụ web" as web-service', () => {
+    const result = quickVietnameseTranslateStructured('dịch vụ web');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('web-service');
+    expect(result!.dictionaryConcepts).toContain('api');
+  });
+
+  it('translates "xác thực hai lớp" as 2fa', () => {
+    const result = quickVietnameseTranslateStructured('xác thực hai lớp');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('2fa');
+    expect(result!.dictionaryConcepts).toContain('mfa');
+    expect(result!.dictionaryConcepts).toContain('two-factor-authentication');
+  });
+
+  it('translates "quản lý truy cập" as access-control', () => {
+    const result = quickVietnameseTranslateStructured('quản lý truy cập');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('access-control');
+    expect(result!.dictionaryConcepts).toContain('rbac');
+  });
+
+  it('translates "đăng ký dịch vụ" as service-registration', () => {
+    const result = quickVietnameseTranslateStructured('đăng ký dịch vụ');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('service-registration');
+    expect(result!.dictionaryConcepts).toContain('service-discovery');
+  });
+
+  it('translates "dịch vụ vi mô" as microservice', () => {
+    const result = quickVietnameseTranslateStructured('dịch vụ vi mô');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('microservice');
+    expect(result!.dictionaryConcepts).toContain('microservices');
+  });
+
+  it('translates "quản trị hệ thống" as system-administration', () => {
+    const result = quickVietnameseTranslateStructured('quản trị hệ thống');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('system-administration');
+    expect(result!.dictionaryConcepts).toContain('sysadmin');
+  });
+
+  it('dictionaryConcepts carry domain signal for new entries', () => {
+    // "quản lý người dùng" has no English tech terms — dictionaryConcepts must carry the signal
+    const result = quickVietnameseTranslateStructured('quản lý người dùng');
+    expect(result).not.toBeNull();
+    expect(result!.techTerms.length).toBe(0);
+    expect(result!.dictionaryConcepts.length).toBeGreaterThanOrEqual(2);
+    expect(result!.dictionaryConcepts).toContain('user-management');
+  });
+});
+
+describe('quickVietnameseTranslate — new dictionary entries', () => {
+  it('translates "ứng dụng" as application/app', () => {
+    const result = quickVietnameseTranslateStructured('ứng dụng');
+    expect(result).not.toBeNull();
+    // 'application' is filtered as generic; 'app' is the non-generic fallback
+    expect(result!.translation).toContain('app');
+  });
+
+  it('translates "dịch vụ" as microservice (service is generic-filtered)', () => {
+    const result = quickVietnameseTranslateStructured('dịch vụ');
+    expect(result).not.toBeNull();
+    // 'service' is filtered as generic; 'microservice' is the non-generic fallback
+    expect(result!.translation).toContain('microservice');
+  });
+
+  it('translates "dịch vụ đám mây" as cloud-service', () => {
+    const result = quickVietnameseTranslateStructured('dịch vụ đám mây');
+    expect(result).not.toBeNull();
+    expect(result!.translation).toContain('cloud-service');
   });
 });

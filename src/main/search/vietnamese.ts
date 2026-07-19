@@ -57,11 +57,11 @@ const VIETNAMESE_MARKER_WORDS = new Set([
   'hệ', 'thống', 'máy', 'chủ', 'dịch', 'vụ', 'cho', 'việc', 'làm',
   'nền', 'tảng', 'tự', 'động', 'mã', 'nguồn', 'mở', 'phép', 'thuật',
   'hỗ', 'trợ', 'ưu', 'thiên', 'chỉ', 'ít', 'nhiều', 'hơn', 'giữa',
-  'sử', 'dụng', 'phát', 'triển', 'ứng', 'dụng', 'bảo', 'mật', 'khóa',
+  'sử', 'dụng', 'phát', 'triển', 'ứng', 'bảo', 'mật', 'khóa',
   'an', 'toàn', 'dữ', 'liệu', 'thông', 'tin', 'tác', 'nhân', 'chạy',
-  'riêng', 'biệt', 'riêng', 'cùng', 'thuộc', 'biểu', 'mẫy', 'theo',
-  'dõi', 'nhật', 'ký', 'nhắc', 'nhở', 'truy', 'vấn', 'câu', 'truy',
-  'lập', 'trình', 'ngôn', 'ngữ', 'khai', 'thác', 'học', 'thuật',
+  'riêng', 'biệt', 'cùng', 'thuộc', 'biểu', 'mẫy', 'theo',
+  'dõi', 'nhật', 'ký', 'nhắc', 'nhở', 'truy', 'vấn', 'câu',
+  'lập', 'trình', 'ngôn', 'ngữ', 'khai', 'thác', 'học',
   'chú', 'giải', 'tài', 'liệu', 'thư', 'viện', 'khung', 'mô', 'hình',
   'kiểm', 'soát', 'phiên', 'bản', 'phân', 'tích', 'tích', 'hợp',
   'kết', 'nối', 'mạng', 'lưới', 'đám', 'mây', 'riêng', 'tư',
@@ -119,6 +119,53 @@ export function detectVietnamese(text: string): number {
   return Math.min(score, 1);
 }
 
+
+
+// ── Vietnamese query normalization ──
+
+const VIETNAMESE_FILLER_PREFIXES = [
+  /^tôi\s+muốn\s+tìm\s+(một\s+)?/i,
+  /^tôi\s+cần\s+tìm\s+(một\s+)?/i,
+  /^tôi\s+muốn\s+(một\s+)?/i,
+  /^tôi\s+cần\s+(một\s+)?/i,
+  /^tôi\s+đang\s+tìm\s+(một\s+)?/i,
+  /^tìm\s+cho\s+tôi\s+(một\s+)?/i,
+  /^cho\s+tôi\s+(một\s+)?/i,
+  /^bạn\s+có\s+thể\s+giúp\s+tôi\s+tìm\s+(một\s+)?/i,
+  /^giúp\s+tôi\s+tìm\s+(một\s+)?/i,
+  /^làm\s+ơn\s+tìm\s+(một\s+)?/i,
+  /^tôi\s+muốn\s+biết\s+(về\s+)?/i,
+];
+
+const VIETNAMESE_FILLER_SUFFIXES = [
+  /\s+nhé\s+nhé$/i,
+  /\s+nhé$/i,
+  /\s+nha$/i,
+  /\s+ạ$/i,
+  /\s+có\s+được\s+không$/i,
+  /\s+được\s+không$/i,
+  /\s+giúp\s+tôi\s+với$/i,
+  /\s+giúp\s+tôi$/i,
+  /\s+với\s+nhé$/i,
+  /\s+xem\s+nào$/i,
+  /\s+đi\s+nhé$/i,
+];
+
+export function normalizeVietnameseQuery(text: string): string {
+  let trimmed = text.trim();
+  for (const pattern of VIETNAMESE_FILLER_PREFIXES) {
+    const match = trimmed.match(pattern);
+    if (match) {
+      const remainder = trimmed.slice(match[0].length).trim();
+      if (remainder.length >= 4) { trimmed = remainder; break; }
+    }
+  }
+  for (const pattern of VIETNAMESE_FILLER_SUFFIXES) {
+    const stripped = trimmed.replace(pattern, '').trim();
+    if (stripped.length >= 4 && stripped !== trimmed) { trimmed = stripped; break; }
+  }
+  return trimmed;
+}
 // ── Vietnamese→English dictionary for local (non-LLM) translation ──
 
 /**
@@ -262,12 +309,38 @@ const VIETNAMESE_TECH_DICTIONARY: Record<string, string[]> = {
   'nginx': ['nginx', 'web-server'],
   'react': ['react', 'frontend'],
   'vue': ['vue', 'frontend'],
+  // ── Additional TECH_TERMS: self-hosting community favorites ──
+  'vaultwarden': ['vaultwarden', 'password-manager'],
+  'homeassistant': ['home-assistant', 'home-automation'],
+  'home assistant': ['home-assistant', 'home-automation'],
+  'wireguard': ['wireguard', 'vpn'],
+  'paperless': ['paperless', 'document-management'],
+  'postgrest': ['postgrest', 'api'],
+  'd3': ['d3', 'data-visualization'],
+  'chartjs': ['chartjs', 'data-visualization'],
+  'echarts': ['echarts', 'data-visualization'],
+  'plotly': ['plotly', 'data-visualization'],
+  'recharts': ['recharts', 'data-visualization'],
+  'apexcharts': ['apexcharts', 'data-visualization'],
+  'vega': ['vega', 'data-visualization'],
+  'observable': ['observable', 'data-visualization'],
+  'metabase': ['metabase', 'analytics', 'dashboard'],
+  'superset': ['superset', 'analytics', 'data-visualization'],
+  'redash': ['redash', 'analytics', 'dashboard'],
+
 
   // ── Misc common ──
   // Intent-carrying alternatives for generic Vietnamese→English mappings.
   // Generic-only terms (system, platform, tool) are filtered by ENGLISH_GENERIC_TERMS,
   // so compound entries provide the domain-specific search terms that survive filtering.
-  'công cụ': ['devops-tool', 'cli-tool'],
+  //
+  // "công cụ" (tool) is domain-agnostic — mapping it to "devops-tool"/"cli-tool" forced
+  // every "công cụ X" query into the DevOps/CLI intent cluster, producing irrelevant
+  // results for non-DevOps domains (e.g., "công cụ quản lý căn tin" → retail/POS).
+  // Use generic "tool"/"utility" so the actual domain word ("căn tin", "bán hàng"…)
+  // drives the query, and ENGLISH_GENERIC_TERMS strips the generic word from the
+  // primary translation, leaving the domain term.
+  'công cụ': ['tool', 'utility'],
   'nền tảng': ['platform', 'framework'],
   'hệ thống': ['system', 'infra'],
   'trình': ['runner', 'engine'],
@@ -433,6 +506,108 @@ const VIETNAMESE_TECH_DICTIONARY: Record<string, string[]> = {
   'di chuyển': ['migration', 'transfer'],
   'thống nhất': ['unified', 'consolidated'],
   'quay lại': ['rollback', 'undo'],
+  // ── Data visualization terms ──
+  'đồ thị': ['chart', 'graph', 'visualization'],
+  'biểu đồ': ['chart', 'visualization'],
+  'vẽ đồ thị': ['charting', 'graphing'],
+  'trực quan hóa dữ liệu': ['data-visualization', 'dashboard'],
+  'dashboard dữ liệu': ['data-dashboard', 'visualization'],
+
+  // ── VPN / privacy ──
+  'mạng riêng ảo': ['vpn', 'wireguard'],
+
+  // ── Home automation / IoT ──
+  'nhà thông minh': ['home-automation', 'iot'],
+  'tự động hóa nhà': ['home-automation', 'smart-home'],
+
+  // ── Password / secrets ──
+  'kho bí mật': ['secrets-manager', 'vault'],
+
+  // ── Notes / wiki ──
+  'ghi chú': ['notes', 'note-taking'],
+  'hệ thống wiki': ['wiki', 'knowledge-base'],
+
+  // ── High-frequency Vietnamese terms ──
+  'ứng dụng': ['application', 'app'],
+  'người dùng': ['user', 'user-management'],
+  'dịch vụ': ['service', 'microservice'],
+  'truy cập': ['access', 'access-control'],
+  'tài khoản': ['account', 'user-account'],
+  'quản trị': ['administration', 'admin'],
+  'đăng ký': ['registration', 'signup'],
+  'quản lý người dùng': ['user-management', 'identity-management'],
+  'quản lý tài khoản': ['account-management', 'user-management'],
+  'quản lý truy cập': ['access-control', 'rbac'],
+  'dịch vụ web': ['web-service', 'api'],
+  'xác thực người dùng': ['user-authentication', 'auth'],
+  'dịch vụ vi mô': ['microservice', 'microservices'],
+  'dịch vụ đám mây': ['cloud-service', 'saas'],
+  'quản trị hệ thống': ['system-administration', 'sysadmin'],
+  'quản trị viên': ['administrator', 'admin'],
+  'đăng ký dịch vụ': ['service-registration', 'service-discovery'],
+  'xác thực hai lớp': ['2fa', 'mfa', 'two-factor-authentication'],
+
+  // ── Retail / POS / hospitality / food-service ──
+  // These map Vietnamese business-domain terms to GitHub-friendly English keywords.
+  // Without these, queries like "công cụ quản lý căn tin" produce romanized garbage
+  // ("can tin") and irrelevant DevOps results. The longer compound entries are
+  // matched first by the sliding-window translator, so order them before singles.
+  'căn tin': ['canteen', 'cafeteria', 'food-service'],
+  'quản lý căn tin': ['canteen-management', 'food-service-management'],
+  'bán hàng': ['point-of-sale', 'pos', 'sales', 'ecommerce'],
+  'quản lý bán hàng': ['sales-management', 'point-of-sale', 'pos'],
+  'cửa hàng': ['store', 'shop', 'retail'],
+  'quản lý cửa hàng': ['store-management', 'retail-management'],
+  'quán': ['restaurant', 'cafe', 'shop'],
+  'quán cafe': ['cafe', 'coffee-shop'],
+  'quán ăn': ['restaurant', 'food-service'],
+  'nhà hàng': ['restaurant', 'restaurant-management'],
+  'quản lý nhà hàng': ['restaurant-management', 'restaurant-pos'],
+  'thực đơn': ['menu', 'menu-management'],
+  'đơn hàng': ['order', 'order-management'],
+  'quản lý đơn hàng': ['order-management', 'order-tracking'],
+  'tồn kho': ['inventory', 'stock'],
+  'quản lý tồn kho': ['inventory-management', 'stock-management'],
+  'kho hàng': ['warehouse', 'inventory'],
+  'quản lý kho': ['warehouse-management', 'inventory-management'],
+  'thu ngân': ['cashier', 'point-of-sale', 'pos'],
+  'hóa đơn': ['invoice', 'receipt', 'billing'],
+  'quản lý hóa đơn': ['invoice-management', 'billing'],
+  'khách hàng': ['customer', 'crm'],
+  'quản lý khách hàng': ['crm', 'customer-management'],
+  'sản phẩm': ['product', 'product-management'],
+  'quản lý sản phẩm': ['product-management', 'catalog'],
+  'thanh toán': ['payment', 'checkout', 'billing'],
+  'quản lý thanh toán': ['payment-management', 'billing'],
+  'đặt món': ['order', 'food-ordering'],
+  'đặt bàn': ['reservation', 'table-booking'],
+  'giao hàng': ['delivery', 'shipping'],
+  'quản lý giao hàng': ['delivery-management', 'shipping'],
+  'đại lý': ['agent', 'distributor'],
+  'bán lẻ': ['retail', 'point-of-sale'],
+  'bán buôn': ['wholesale', 'b2b'],
+  'siêu thị': ['supermarket', 'grocery', 'retail'],
+  'chợ': ['market', 'marketplace'],
+  'thương mại điện tử': ['ecommerce', 'e-commerce', 'online-store'],
+  'cửa hàng online': ['online-store', 'ecommerce'],
+  'quản lý cửa hàng online': ['ecommerce-management', 'online-store'],
+  'gian hàng': ['booth', 'storefront', 'vendor'],
+  'nhân viên': ['employee', 'staff'],
+  'quản lý nhân viên': ['employee-management', 'staff-management'],
+  'ca làm việc': ['shift', 'shift-scheduling'],
+  'chấm công': ['time-tracking', 'attendance'],
+  'quản lý ca làm việc': ['shift-management', 'staff-scheduling'],
+
+  // ── Audio / media ──
+  'trình đọc nhạc': ['music-player', 'audio'],
+  'phát trực tiếp': ['streaming', 'live-streaming'],
+
+  // ── CI/CD Runner entries ──
+  'trình chạy': ['runner', 'executor', 'ci-cd'],
+  'trình chạy ci': ['ci-runner', 'ci-cd'],
+  'trình chạy tự động': ['automation-runner', 'workflow-runner'],
+  'công cụ chạy': ['runner', 'executor', 'launcher'],
+
 };
 
 /**
@@ -952,6 +1127,8 @@ export interface QuickVietnameseResult {
   expandedKeywords: string[];
   /** Best-guess intent slug (e.g., "devops-tool", "security-tool") or null */
   intent: string | null;
+  /** Concepts from dictionary translation */
+  dictionaryConcepts: string[];
 }
 
 /**
@@ -980,7 +1157,7 @@ export const ENGLISH_GENERIC_TERMS = new Set([
   // Generic nouns commonly produced by Vietnamese→English dictionary mapping.
   // These match too many repos in GitHub search and dilute ranking relevance.
   'system', 'platform', 'tool', 'support', 'service', 'solution',
-  'application', 'software', 'runner', 'engine', 'manager',
+  'application', 'software', 'manager', 'utility', 'utilities',
 ]);
 
 export function quickVietnameseTranslate(text: string): string | null {
@@ -1018,6 +1195,9 @@ export function quickVietnameseTranslateStructured(text: string): QuickVietnames
         const primary = dictEntry[0].toLowerCase();
         if (!ENGLISH_GENERIC_TERMS.has(primary)) {
           translatedParts.push(dictEntry[0]);
+        } else {
+          const alt = dictEntry.find(t => !ENGLISH_GENERIC_TERMS.has(t.toLowerCase()));
+          if (alt) translatedParts.push(alt);
         }
         // Collect all translations (including secondary) as concepts
         // (skip generic terms — they match too many repos)
@@ -1071,6 +1251,7 @@ export function quickVietnameseTranslateStructured(text: string): QuickVietnames
     techTerms,
     expandedKeywords,
     intent,
+    dictionaryConcepts: concepts,
   };
 }
 
@@ -1090,6 +1271,25 @@ const TECH_TERMS: Record<string, string[]> = {
   'cicd': ['ci-cd', 'continuous-integration'],
   'react': ['react', 'frontend'],
   'vue': ['vue', 'frontend'],
+  // ── Additional TECH_TERMS: self-hosting community favorites ──
+  'vaultwarden': ['vaultwarden', 'password-manager'],
+  'homeassistant': ['home-assistant', 'home-automation'],
+  'home assistant': ['home-assistant', 'home-automation'],
+  'wireguard': ['wireguard', 'vpn'],
+  'paperless': ['paperless', 'document-management'],
+  'postgrest': ['postgrest', 'api'],
+  'd3': ['d3', 'data-visualization'],
+  'chartjs': ['chartjs', 'data-visualization'],
+  'echarts': ['echarts', 'data-visualization'],
+  'plotly': ['plotly', 'data-visualization'],
+  'recharts': ['recharts', 'data-visualization'],
+  'apexcharts': ['apexcharts', 'data-visualization'],
+  'vega': ['vega', 'data-visualization'],
+  'observable': ['observable', 'data-visualization'],
+  'metabase': ['metabase', 'analytics', 'dashboard'],
+  'superset': ['superset', 'analytics', 'data-visualization'],
+  'redash': ['redash', 'analytics', 'dashboard'],
+
   'angular': ['angular', 'frontend'],
   'node': ['nodejs', 'node'],
   'nodejs': ['nodejs', 'node'],
@@ -1437,6 +1637,66 @@ const VIETNAMESE_GITHUB_SYNONYMS: Record<string, string[]> = {
   'quản lý dự án': ['project-management', 'task-management', 'kanban'],
   'hệ thống nhắn tin': ['messaging-system', 'chat'],
   'trực quan hóa': ['visualization', 'charting', 'dashboard'],
+  // ── Data visualization synonyms ──
+  'đồ thị': ['chart', 'graph', 'visualization'],
+  'biểu đồ': ['chart', 'visualization', 'plot'],
+  'vẽ đồ thị': ['charting', 'graphing', 'plotting'],
+  'trực quan hóa dữ liệu': ['data-visualization', 'dataviz', 'dashboard'],
+
+  // ── VPN / privacy synonyms ──
+  'mạng riêng ảo': ['vpn', 'wireguard'],
+
+  // ── Home automation / IoT synonyms ──
+  'nhà thông minh': ['home-automation', 'smart-home', 'iot'],
+
+  // ── Notes / wiki synonyms ──
+  'ghi chú': ['notes', 'note-taking', 'notebook'],
+  'hệ thống wiki': ['wiki', 'knowledge-base'],
+
+  // ── High-frequency synonym entries ──
+  'người dùng': ['user', 'user-management', 'identity'],
+  'dịch vụ': ['service', 'microservice', 'api'],
+  'truy cập': ['access', 'access-control', 'gateway'],
+  'tài khoản': ['account', 'user-account', 'profile'],
+  'quản trị': ['admin', 'administration', 'dashboard'],
+  'đăng ký': ['registration', 'signup', 'onboarding'],
+  'dịch vụ web': ['web-service', 'rest-api', 'api'],
+  'xác thực người dùng': ['user-authentication', 'auth', 'login'],
+  'dịch vụ vi mô': ['microservice', 'microservices', 'distributed'],
+  'dịch vụ đám mây': ['cloud-service', 'saas', 'serverless'],
+  'xác thực hai lớp': ['2fa', 'mfa', 'two-factor-auth'],
+  'quản lý người dùng': ['user-management', 'identity-management', 'iam'],
+  'quản lý truy cập': ['access-control', 'rbac', 'permissions'],
+  'quản trị hệ thống': ['system-administration', 'sysadmin', 'ops'],
+  'đăng ký dịch vụ': ['service-registry', 'service-discovery', 'consul'],
+
+  // ── CI/CD Runner synonyms ──
+  'trình chạy': ['runner', 'executor', 'ci-cd', 'workflow-runner', 'action-runner'],
+  'trình chạy ci': ['ci-runner', 'github-actions', 'ci-cd'],
+  'công cụ chạy': ['runner', 'executor', 'launcher'],
+
+  // ── Retail / POS / hospitality synonyms ──
+  // These expand Vietnamese business terms into GitHub-friendly variants so
+  // buildSearchParamsArray produces diverse queries (e.g., "căn tin" → canteen,
+  // cafeteria, food-service). Without this, only the primary dictionary
+  // translation is searched.
+  'căn tin': ['canteen', 'cafeteria', 'food-service'],
+  'bán hàng': ['pos', 'point-of-sale', 'sales', 'ecommerce'],
+  'cửa hàng': ['store', 'shop', 'retail', 'storefront'],
+  'nhà hàng': ['restaurant', 'restaurant-management', 'restaurant-pos'],
+  'tồn kho': ['inventory', 'stock', 'inventory-management'],
+  'kho hàng': ['warehouse', 'inventory', 'warehouse-management'],
+  'khách hàng': ['customer', 'crm', 'customer-management'],
+  'thanh toán': ['payment', 'checkout', 'billing', 'payment-gateway'],
+  'đơn hàng': ['order', 'order-management', 'order-tracking'],
+  'thực đơn': ['menu', 'menu-management'],
+  'hóa đơn': ['invoice', 'receipt', 'billing', 'invoice-management'],
+  'giao hàng': ['delivery', 'shipping', 'delivery-management'],
+  'bán lẻ': ['retail', 'pos', 'point-of-sale'],
+  'thương mại điện tử': ['ecommerce', 'e-commerce', 'online-store', 'shop'],
+  'nhân viên': ['employee', 'staff', 'hr'],
+  'chấm công': ['time-tracking', 'attendance', 'time-clock'],
+
 };
 
 /**
@@ -1459,8 +1719,28 @@ export function expandGithubSynonyms(
   // Don't re-add terms already in the primary translation
   const translatedSet = new Set(translatedParts.map(p => p.toLowerCase()));
 
+  // First pass: find words consumed by compound matches
+  const wordsConsumedByCompound = new Set<string>();
+  for (const [viPhrase] of Object.entries(VIETNAMESE_GITHUB_SYNONYMS)) {
+    if (viPhrase.includes(' ') && originalLower.includes(viPhrase)) {
+      for (const w of viPhrase.split(/\s+/)) {
+        if (w.length >= 2) wordsConsumedByCompound.add(w);
+      }
+    }
+  }
+
   for (const [viPhrase, synonyms] of Object.entries(VIETNAMESE_GITHUB_SYNONYMS)) {
-    if (originalLower.includes(viPhrase)) {
+    let matches: boolean;
+    if (viPhrase.includes(' ')) {
+      matches = originalLower.includes(viPhrase);
+    } else if (wordsConsumedByCompound.has(viPhrase)) {
+      matches = false;
+    } else {
+      const escaped = viPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i');
+      matches = pattern.test(originalLower);
+    }
+    if (matches) {
       for (const syn of synonyms) {
         if (!seen.has(syn) && !translatedSet.has(syn)) {
           seen.add(syn);
@@ -1470,7 +1750,7 @@ export function expandGithubSynonyms(
     }
   }
 
-  return expanded.slice(0, 6); // cap at 6 to avoid query explosion
+  return expanded.slice(0, 10); // cap at 10 to avoid query explosion (was 6)
 }
 
 // ── Vietnamese intent classification ──
@@ -1499,9 +1779,14 @@ const VIETNAMESE_INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string }> = [
   // Backup/DR — must come before database so "sao lưu dự phòng" → self-hosted not database
   { pattern: /sao lưu dự phòng|disaster.recovery|backup.solution|phục hồi dữ liệu/i, intent: 'self-hosted' },
   // Data visualization — must come before database so "trực quan dữ liệu" → library not database
-  { pattern: /trực quan dữ liệu|trực quan hóa|dashboard.*dữ liệu|chart|biểu đồ/i, intent: 'library' },
+  { pattern: /trực quan dữ liệu|trực quan hóa|dashboard.*dữ liệu|chart|biểu đồ|vẽ biểu đồ|đồ thị|trực quan/i, intent: 'data-visualization' },
   // Database
   { pattern: /cơ sở dữ liệu|dữ liệu|kho dữ liệu|sql|truy vấn|sao lưu|phục hồi/i, intent: 'database' },
+  // ── User auth / identity ──
+  { pattern: /quản lý người dùng|quản lý tài khoản|xác thực người dùng|xác thực hai lớp|đăng nhập một lần|đăng ký người dùng/i, intent: 'authentication' },
+  // ── Access control ──
+  { pattern: /quản lý truy cập|kiểm soát truy cập|phân quyền người dùng|rbac/i, intent: 'security-tool' },
+  
   // AI/ML
   { pattern: / trí tuệ nhân tạo|học máy|học sâu|mô hình ngôn ngữ|xử lý ngôn ngữ tự nhiên|thị giác máy tính|tạo sinh|huấn luyện|suy luận|ai\b|ml\b|llm\b/i, intent: 'ai-ml-tool' },
   // Networking — must come before web-app so "proxy" and "gateway" don't get mis-classified
@@ -1559,6 +1844,17 @@ const VIETNAMESE_INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string }> = [
   { pattern: /chia sẻ tệp|đồng bộ tệp|file.sharing|cloud.storage|nextcloud/i, intent: 'self-hosted' },
   // Project management
   { pattern: /quản lý dự án|project.management|kanban|bảng công việc/i, intent: 'web-app' },
+  // ── Service discovery / microservices ──
+  { pattern: /dịch vụ vi mô|đăng ký dịch vụ|khám phá dịch vụ|service.discovery/i, intent: 'devops-tool' },
+  // ── Cloud services ──
+  { pattern: /dịch vụ đám mây|cloud.service|saas|serverless|function.as.a/i, intent: 'devops-tool' },
+  // ── Web service ──
+  { pattern: /dịch vụ web|web.service|restful|soap.api/i, intent: 'api' },
+  // ── System administration ──
+  { pattern: /quản trị hệ thống|quản trị viên|sysadmin|system.administration/i, intent: 'devops-tool' },
+  // ── CI/CD Runners ──
+  { pattern: /trình chạy|trình thực thi|ci.runner|action.runner|executor/i, intent: 'devops-tool' },
+
   // ── Additional high-ROI intent patterns for common Vietnamese queries ──
   // Performance / profiling — "tối ưu" (optimize) queries are very common
   { pattern: /tối ưu|hiệu suất|nhanh nhất|tối ưu hóa|benchmark|xuất sắc/i, intent: 'devops-tool' },
@@ -1593,6 +1889,14 @@ const VIETNAMESE_INTENT_PATTERNS: Array<{ pattern: RegExp; intent: string }> = [
   { pattern: /xử lý pdf|pdf.*tool|chuyển đổi pdf|doc.*processing|trích xuất văn bản/i, intent: 'library' },
   // DNS/network resolution — distinct from general networking queries
   { pattern: /phân giải dns|dns.*resolver|máy chủ dns|dns.server/i, intent: 'networking-tool' },
+  // ── Retail / POS / hospitality / food-service ──
+  // These business-domain queries should NOT fall through to devops-tool/web-app
+  // defaults. Map them to 'web-app' intent (closest match in INTENT_TOPIC_CLUSTERS
+  // for application-style repos) with retail-specific topic clusters handled in
+  // the ranking engine via INTENT_TOPIC_CLUSTERS['retail-pos'].
+  { pattern: /căn tin|bán hàng|cửa hàng|bán lẻ|bán buôn|thu ngân|hóa đơn|đơn hàng|tồn kho|kho hàng|siêu thị|gian hàng|thương mại điện tử|cửa hàng online/i, intent: 'retail-pos' },
+  { pattern: /nhà hàng|quán ăn|quán cafe|thực đơn|đặt món|đặt bàn|quản lý nhà hàng/i, intent: 'retail-pos' },
+  { pattern: /khách hàng|sản phẩm|thanh toán|giao hàng|nhân viên|chấm công|ca làm việc/i, intent: 'retail-pos' },
 ];
 
 /**
@@ -1687,7 +1991,7 @@ export function detectVietnameseRefinement(text: string): import('./refinement-p
   }
 
   // Vietnamese "chỉ mã nguồn mở" or "giấy phép X"
-  if (lower.includes('mã nguồn mở') || lower.includes('mã nguồn mở')) {
+  if (lower.includes('mã nguồn mở') || lower.includes('open source')) {
     return {
       type: 'emphasis',
       emphasis: { semanticMatch: 1.0, starsScore: 1.0, activityScore: 1.0, readmeRelevance: 1.0, languageMatch: 1.0, licenseCompatibility: 3.0 },
@@ -1700,6 +2004,24 @@ export function detectVietnameseRefinement(text: string): import('./refinement-p
   }
   if (lower.includes('mới nhất') || lower.includes('cập nhật gần đây')) {
     return { type: 'raw-sort', sortKey: 'updated_at', sortDesc: true };
+  }
+
+  // Vietnamese star threshold filter: "trên 5000 sao", "hơn 1000 sao", "từ 10k sao trở lên", ">1000 sao"
+  const viStarPatterns = [
+    /(?:trên|hơn|từ|ít nhất|ít\s+nhất)\s*(\d[\d,.]*)\s*(?:k|nghìn|ngàn|nghìn\s+sao|ngàn\s+sao|sao)?/i,
+    />\s*(\d[\d,.]*)\s*(?:k|sao)?/i,
+    /(\d[\d,.]*)\s*(?:k|nghìn|ngàn)\s*\+?\s*(?:sao)?/i,
+  ];
+  for (const pattern of viStarPatterns) {
+    const m = lower.match(pattern);
+    if (m) {
+      let numStr = m[1].replace(/[,.]/g, '');
+      let num = parseInt(numStr, 10);
+      if (!isNaN(num) && num > 0) {
+        if (/k|nghìn|ngàn/i.test(m[0])) { num *= 1000; }
+        return { type: 'filter', minStars: num } as any;
+      }
+    }
   }
 
   return null;
