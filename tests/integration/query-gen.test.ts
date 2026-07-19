@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { OllamaClient } from '../../src/main/ollama/client';
 import { QueryGenerator } from '../../src/main/search/query-gen';
 import { createMockOllamaClient, createDisconnectedOllamaClient } from '../mocks/ollama';
 import type { SearchParams } from '../../src/shared/types';
@@ -8,7 +9,7 @@ const USE_LIVE = process.env.RUN_INTEGRATION_TESTS === 'true' && process.env.OLL
 describe('QueryGenerator (integration)', () => {
   it('extracts criteria from natural language', async () => {
     const mock = createMockOllamaClient();
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'llama3.2');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'llama3.2');
 
     const criteria = await qg.extractCriteria('I need a self-hosted CI/CD tool with Docker support');
     expect(criteria.keywords.join(' ')).toContain('CI/CD');
@@ -21,7 +22,7 @@ describe('QueryGenerator (integration)', () => {
   it('handles malformed LLM output gracefully', async () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('some garbage text that is not json');
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     await expect(qg.extractCriteria('test request')).rejects.toThrow();
   });
@@ -29,7 +30,7 @@ describe('QueryGenerator (integration)', () => {
   it('handles JSON wrapped in markdown fences', async () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('```json\n{"keywords":["test"],"technologies":["Go"],"intent":"other","useCase":"testing","minStars":0,"preferredLicense":null,"requireRecentActivity":false}\n```');
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     const criteria = await qg.extractCriteria('test request for a thing');
     // No garbage padding — returns actual LLM keywords
@@ -40,7 +41,7 @@ describe('QueryGenerator (integration)', () => {
 
   it('builds search params from criteria', () => {
     const mock = createMockOllamaClient();
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     const params = qg.buildSearchParams({
       keywords: ['docker', 'ci-cd', 'pipeline'],
@@ -61,7 +62,7 @@ describe('QueryGenerator (integration)', () => {
 
   it('applies filter overrides to search params', () => {
     const mock = createMockOllamaClient();
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     const params = qg.buildSearchParams(
       { keywords: ['test'], technologies: [], intent: 'other', useCase: 'test', minStars: 10, preferredLicense: null, requireRecentActivity: false },
@@ -76,7 +77,7 @@ describe('QueryGenerator (integration)', () => {
   it('generates match explanations', async () => {
     const mock = createMockOllamaClient();
     mock.generate.mockResolvedValueOnce('This repository matches because it is a self-hosted CI/CD platform with Docker integration.');
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     const explanation = await qg.generateMatchExplanation('org/ci-tool', 'Docker-native CI/CD', 'I need CI/CD with Docker');
     expect(explanation).toBeTruthy();
@@ -84,7 +85,7 @@ describe('QueryGenerator (integration)', () => {
 
   it('builds search params array with multiple queries', () => {
     const mock = createMockOllamaClient();
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     const paramsArray = qg.buildSearchParamsArray({
       keywords: ['docker', 'ci-cd', 'pipeline'],
@@ -105,7 +106,7 @@ describe('QueryGenerator (integration)', () => {
 
   it('handles Ollama being unavailable during query generation', async () => {
     const mock = createDisconnectedOllamaClient();
-    const qg = new QueryGenerator(mock as unknown as Parameters<typeof QueryGenerator>[0], 'test');
+    const qg = new QueryGenerator(mock as unknown as OllamaClient, 'test');
 
     await expect(qg.extractCriteria('test')).rejects.toThrow();
   });

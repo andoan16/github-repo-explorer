@@ -2,7 +2,7 @@ import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/
 import type { OllamaClient } from '../ollama/client';
 import type { GitHubRepo } from '../../shared/types';
 import { computeResultStatistics, mineNegativeSpace } from './result-stats';
-import { detectVietnamese, extractTechTerms, expandGithubSynonyms, classifyVietnameseIntent, normalizeDiacritics } from './vietnamese';
+import { detectVietnamese, extractTechTerms, expandGithubSynonyms, classifyVietnameseIntent, normalizeDiacritics, quickVietnameseTranslateStructured, normalizeVietnameseQuery, ENGLISH_GENERIC_TERMS, VIETNAMESE_STOP_WORDS } from './vietnamese';
 
 const INTENT_ANGLES: Record<string, string> = {
   'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
@@ -25,7 +25,36 @@ const INTENT_ANGLES: Record<string, string> = {
   'testing': 'Prioritize suggestions about test framework support, CI integration, coverage reporting, and language bindings.',
   'automation': 'Prioritize suggestions about trigger types, workflow complexity, error handling, and integration count.',
   'web-framework': 'Prioritize suggestions about rendering model (SSR/SSG/SPA), bundle size, plugin ecosystem, and TypeScript support.',
+  'data-visualization': 'Prioritize suggestions about chart types, rendering performance, interactivity, accessibility, and framework integrations.',
+  'retail-pos': 'Prioritize suggestions about POS vs ecommerce vs inventory focus, payment integration, multi-store support, and language/framework.',
 };
+
+/**
+ * Generic English nouns that are NOT in ENGLISH_GENERIC_TERMS but still match
+ * too many GitHub repos to be useful as standalone search queries.
+ * When an expandedKeyword is a single word in this set, skip it as a GitHub query.
+ * Multi-word expanded keywords containing these words (e.g., "canteen management")
+ * are still used because the domain word narrows the result set.
+ */
+const EXPANDED_KEYWORD_STOPWORDS = new Set([
+  'management', 'manager', 'admin', 'monitoring', 'logging',
+  'tracking', 'automation', 'security', 'networking', 'database',
+  'server', 'client', 'proxy', 'gateway', 'storage', 'cache',
+  'search', 'analytics', 'dashboard', 'config', 'deployment',
+  'testing', 'build', 'ci', 'cd', 'runner', 'engine', 'runtime',
+  'editor', 'viewer', 'parser', 'scheduler', 'worker', 'agent',
+  'controller', 'handler', 'provider', 'adapter', 'wrapper',
+  'connector', 'bridge', 'sync', 'backup', 'restore', 'recovery',
+  'migration', 'import', 'export', 'converter', 'generator',
+  'validator', 'checker', 'scanner', 'monitor', 'logger',
+  'notifier', 'reporter', 'counter', 'tracker', 'scheduler',
+  'cli', 'tui', 'gui', 'api', 'sdk', 'lib', 'app', 'web',
+  // Domain-specific but too common as single-word GitHub queries
+  'pos', 'retail', 'inventory', 'sales', 'store', 'shop', 'order',
+  'payment', 'billing', 'invoice', 'customer', 'crm', 'warehouse',
+  'ecommerce', 'restaurant', 'cafe', 'menu', 'delivery', 'checkout',
+  'canteen', 'cafeteria', 'food-service',
+]);
 
 export class QueryGenerator {
   constructor(private ollama: OllamaClient, private model: string) {}
@@ -34,25 +63,49 @@ export class QueryGenerator {
     // Use pre-computed flag if available to avoid redundant detectVietnamese() call
     const isVietnamese = precomputedIsVietnamese ?? (detectVietnamese(userDescription) >= 0.3);
 
-    const multilingualInstruction = isVietnamese
-      ? `\n\nVietnamese input. Translate EVERY Vietnamese word to English for searchQueries. Common map: giám sát→monitoring, máy chủ→server, máy tính→computer, quản lý→manage/admin, quản lý mật khẩu→password manager, tự host→self-hosted, mã nguồn mở→open source, giấy phép→license, cơ sở dữ liệu→database, bảo mật→security, phát triển→development, triển khai→deploy, thư viện→library, ứng dụng→app/application, giao diện→interface, nhúng→embedded, nhẹ→lightweight, nhanh→fast, an toàn→safe/secure, ổn định→stable, phổ biến→popular, xử lý→process/handle, tìm kiếm→search, phân tích→analysis, tự động→automated, học máy→ml, trí tuệ nhân tạo→ai, học sâu→deep learning, thị giác máy tính→computer vision, xử lý ngôn ngữ tự nhiên→nlp, kho dữ liệu→data warehouse, tích hợp liên tục→ci, phân tích log→log analysis, hệ thống phân tán→distributed system, lưu trữ→storage, bộ nhớ→memory, điều phối→orchestration, hạ tầng→infrastructure. Include englishTranslation + technicalConcepts fields. Use concise 2-4 word English search phrases.`
+    // ── Normalize Vietnamese queries before processing ──
+    // Strip polite filler phrases so the LLM prompt and dictionary translation
+    // receive clean domain terms instead of sentence-level noise.
+    // "tôi muốn tìm một công cụ giám sát" → "công cụ giám sát"
+    const effectiveDescription = isVietnamese
+      ? normalizeVietnameseQuery(userDescription)
+      : userDescription;
+
+    // ── Pre-compute Vietnamese translation for fallback only ──
+    // The dictionary translation is used ONLY as a fallback when the LLM is
+    // unavailable, and as a light hint. It is NOT injected into the LLM prompt
+    // to constrain its reasoning — the LLM should freely analyze the user's
+    // actual intent and choose the best GitHub search keywords, even if that
+    // means translating "quản lý căn tin" to "point-of-sale inventory" rather
+    // than the literal "canteen management".
+    const preTrans = isVietnamese ? quickVietnameseTranslateStructured(effectiveDescription) : null;
+
+    // Build a light context block with the original Vietnamese text and
+    // dictionary hints. The LLM may use these as a starting point but is
+    // explicitly instructed to reason about the user's actual need and choose
+    // the best English search keywords — not to copy the dictionary translation.
+    // Also pass dictionary concepts as hints so the LLM can broaden beyond
+    // literal translation when the domain has a well-known GitHub ecosystem
+    // (e.g., "canteen management" → POS, inventory, food-ordering).
+    const preContext = isVietnamese
+      ? `\n\nThe user wrote in Vietnamese. Translate and reason about their actual intent.\nOriginal Vietnamese: "${userDescription}"${preTrans?.dictionaryConcepts?.length ? `\nDictionary hints (reference only — improve or replace as needed): ${preTrans.dictionaryConcepts.slice(0, 6).join(', ')}` : ''}\n\nIMPORTANT: Do NOT just translate word-by-word. Reason about what kind of GitHub repository the user actually needs, AND include the specific domain term in at least one query. For example, "quản lý căn tin" (canteen management) needs a point-of-sale / inventory / sales system — include "canteen" or "food service" in at least one query alongside broader terms like "point-of-sale" and "inventory". This ensures the search finds repos directly about the user's domain, not just generic POS/inventory systems.\n\nInclude englishTranslation + technicalConcepts fields. The englishTranslation should be a clean domain phrase (no filler like "I want" or "I need").`
       : '';
 
-    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${multilingualInstruction}
+    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${preContext}
 
 User request: "${userDescription}"
 
-Generate 3 alternative GitHub keyword queries (each 2-4 words), approaching the request from different angles (synonyms, broader/narrower scope, different technology emphasis).${isVietnamese ? ' At least one query should use purely English technical terms translated from the Vietnamese input.' : ''}
+Generate 3 alternative GitHub keyword queries (each 2-4 words), approaching the request from different angles (synonyms, broader/narrower scope, different technology emphasis). Think about what TYPE of software project on GitHub would satisfy the user's need, and choose keywords that would find those projects.${isVietnamese ? ' At least one query should use purely English technical terms.' : ''}
 
 Return ONLY valid JSON — no markdown, no code fences, no commentary:
 
 {
   "searchQueries": ["2-4 keywords query 1", "2-4 keywords query 2", "2-4 keywords query 3"],
   "technologies": ["languages or frameworks mentioned or implied"],
-  "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | other",
+  "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | retail-pos | other",
   "minStars": number (0-5000, default 0),
   "preferredLicense": "mit" | "apache-2.0" | "gpl-3.0" | "bsd-3-clause" | "mpl-2.0" | null,
-  "requireRecentActivity": boolean${isVietnamese ? ',\n  "englishTranslation": "English translation of the user\'s request",\n  "technicalConcepts": ["extracted technical concepts in English, e.g., ci-cd, monitoring, password-manager, self-hosted"]' : ''}
+  "requireRecentActivity": boolean${isVietnamese ? ',\n  "englishTranslation": "English translation of the user\'s request",\n  "technicalConcepts": ["extracted technical concepts in English, e.g., ci-cd, monitoring, password-manager, self-hosted, point-of-sale, inventory"]' : ''}
 }
 
 JSON:`;
@@ -92,37 +145,70 @@ JSON:`;
     const technicalConcepts = criteria.technicalConcepts ?? [];
     const expandedKeywords: string[] = [];
 
-    // If Vietnamese was detected, build expanded keywords from translation + concepts
+    // If Vietnamese was detected, build expanded keywords from translation + concepts.
+    // Strip filler phrases from englishTranslation before using it as a search query.
+    // The LLM sometimes includes "I want a..." or "I need a..." in the translation,
+    // which pollutes GitHub search queries with stop words that GitHub requires to match.
     if (isVietnamese && englishTranslation) {
-      expandedKeywords.push(englishTranslation);
+      const cleanTranslation = englishTranslation
+        .replace(/^(i\s+want|i\s+need|i\s+would\s+like|i'm\s+looking\s+for|please\s+give\s+me|show\s+me|find\s+me)\s+/i, '')
+        .replace(/^(a|an|the)\s+/i, '')
+        .trim();
+      if (cleanTranslation.length >= 2) {
+        expandedKeywords.push(cleanTranslation);
+      } else {
+        expandedKeywords.push(englishTranslation);
+      }
     }
     if (technicalConcepts.length > 0) {
       expandedKeywords.push(...technicalConcepts.slice(0, 5));
     }
 
-    // ── Local Vietnamese enrichment (no LLM call) ──
-    // Even when the LLM produces a translation, deterministic tech terms and
-    // synonym expansions broaden recall without extra API calls.
+    // ── Local Vietnamese fallback enrichment (no LLM call) ──
+    // Only merge dictionary concepts/synonyms when the LLM did NOT produce
+    // its own. When the LLM reasons and produces good keywords/concepts, we
+    // trust its judgment — the dictionary may have a narrower translation
+    // (e.g., "canteen-management") that would override the LLM's broader,
+    // more accurate understanding (e.g., "point-of-sale inventory sales").
     if (isVietnamese) {
-      // Tech terms: extract canonical English terms from the original Vietnamese query
-      const localTechTerms = extractTechTerms(userDescription);
+      // Tech terms: these are literal tech names (docker, kubernetes) — always
+      // merge because they're factual extractions, not subjective translations.
+      const localTechTerms = preTrans?.techTerms ?? extractTechTerms(effectiveDescription);
       for (const t of localTechTerms) {
         if (!technicalConcepts.includes(t)) technicalConcepts.push(t);
       }
 
-      // Synonym expansion: Vietnamese phrases → GitHub-friendly English synonyms
-      const translatedParts = englishTranslation
-        ? englishTranslation.split(/\s+/)
-        : [];
-      const localSynonyms = expandGithubSynonyms(userDescription.toLowerCase(), translatedParts);
-      for (const s of localSynonyms) {
-        if (!expandedKeywords.includes(s)) expandedKeywords.push(s);
+      // Dictionary concepts: ONLY use as fallback when LLM produced none.
+      // When the LLM provides its own technicalConcepts, its reasoning about
+      // the user's actual intent is superior to the word-by-word dictionary.
+      if (technicalConcepts.length === 0 && preTrans?.dictionaryConcepts) {
+        for (const dc of preTrans.dictionaryConcepts) {
+          if (!technicalConcepts.includes(dc)) technicalConcepts.push(dc);
+        }
       }
 
-      // Deterministic intent: pattern-match Vietnamese phrasing → intent slug
-      // Only use when the LLM didn't produce a useful intent
+      // Synonym expansion: ONLY use as fallback when LLM produced no
+      // expandedKeywords. When the LLM provides good keywords, don't dilute
+      // them with dictionary synonyms that may be too narrow.
+      if (expandedKeywords.length === 0 && preTrans?.expandedKeywords) {
+        for (const s of preTrans.expandedKeywords) {
+          if (!expandedKeywords.includes(s)) expandedKeywords.push(s);
+        }
+      }
+      // Also run synonym expansion only when we're using the dictionary fallback
+      if (expandedKeywords.length === 0) {
+        const translatedParts = englishTranslation
+          ? englishTranslation.split(/\s+/)
+          : [];
+        const localSynonyms = expandGithubSynonyms(effectiveDescription.toLowerCase(), translatedParts);
+        for (const s of localSynonyms) {
+          if (!expandedKeywords.includes(s)) expandedKeywords.push(s);
+        }
+      }
+
+      // Deterministic intent: only use when the LLM didn't produce a useful intent.
       if (!criteria.intent || criteria.intent === 'other') {
-        const localIntent = classifyVietnameseIntent(userDescription);
+        const localIntent = preTrans?.intent ?? classifyVietnameseIntent(effectiveDescription);
         if (localIntent) criteria.intent = localIntent;
       }
 
@@ -182,7 +268,7 @@ JSON:`;
     return {
       query,
       language: filters?.language ?? undefined,
-      minStars: filters?.minStars ?? criteria.minStars,
+      minStars: 0, // Not sent to GitHub API — applied as client-side post-filter
       license: filters?.license ?? criteria.preferredLicense ?? undefined,
       sort: 'stars',
       order: 'desc',
@@ -191,10 +277,12 @@ JSON:`;
   }
 
   buildSearchParamsArray(criteria: SearchCriteria, filters?: { language?: string | null; license?: string | null; minStars?: number }): SearchParams[] {
+    // NOTE: minStars is NOT sent to GitHub API — applied as client-side post-filter.
+    // Setting minStars: 0 here ensures we get broad results and cache efficiently.
     const baseParams = criteria.keywords.map((keyword) => ({
       query: keyword,
       language: filters?.language ?? undefined,
-      minStars: filters?.minStars ?? criteria.minStars,
+      minStars: 0,
       license: filters?.license ?? criteria.preferredLicense ?? undefined,
       sort: 'stars' as const,
       order: 'desc' as const,
@@ -202,11 +290,28 @@ JSON:`;
     }));
 
     // Add expanded keyword variants (from multilingual translation)
-    // These are additional search queries for broader coverage
+    // These are additional search queries for broader coverage.
+    //
+    // IMPORTANT: Skip generic single-word expanded keywords (e.g., "management",
+    // "tool", "admin") as standalone GitHub queries. These match millions of
+    // repos and, since GitHub sorts by stars, mega-repos unrelated to the user's
+    // actual domain dominate the results. Only use multi-word expanded keywords
+    // (e.g., "canteen management", "food-service-management") or domain-specific
+    // single words (e.g., "canteen", "cafeteria") as standalone queries.
     if (criteria.expandedKeywords && criteria.expandedKeywords.length > 0) {
       for (const expanded of criteria.expandedKeywords) {
         // Only add if not too similar to existing queries
         const normalizedExpanded = expanded.toLowerCase().replace(/[^\w\s]/g, '').trim();
+
+        // Skip generic single-word expanded keywords — they match too many repos.
+        // Check against ENGLISH_GENERIC_TERMS and also filter single words that
+        // are broad English nouns (management, manager, admin, etc.).
+        const expandedLower = expanded.toLowerCase().trim();
+        const isSingleWord = !expandedLower.includes(' ') && !expandedLower.includes('-');
+        const isGeneric = ENGLISH_GENERIC_TERMS.has(expandedLower) ||
+          (isSingleWord && EXPANDED_KEYWORD_STOPWORDS.has(expandedLower));
+        if (isGeneric) continue;
+
         const isDuplicate = baseParams.some((p) => {
           const normalizedExisting = p.query.toLowerCase().replace(/[^\w\s]/g, '').trim();
           return normalizedExisting === normalizedExpanded ||
@@ -216,7 +321,7 @@ JSON:`;
           baseParams.push({
             query: expanded,
             language: filters?.language ?? undefined,
-            minStars: filters?.minStars ?? criteria.minStars,
+            minStars: 0,
             license: filters?.license ?? criteria.preferredLicense ?? undefined,
             sort: 'stars' as const,
             order: 'desc' as const,
@@ -236,10 +341,29 @@ JSON:`;
       const originalLower = criteria.originalQuery.toLowerCase();
       // Split Vietnamese query into meaningful chunks and strip diacritics
       // e.g., "quản lý mật khẩu" → ["quan", "ly", "mat", "khau"] → queries
-      const viWords = originalLower.split(/[\s,;.!?(){}[\]]+/).filter(w => w.length >= 3);
+      // Use length >= 2 because Vietnamese words like "lý" (2 chars) are
+      // meaningful — stop words are filtered separately below.
+      const viWords = originalLower.split(/[\s,;.!?(){}[\]]+/).filter(w => w.length >= 2);
       if (viWords.length >= 2) {
-        // Full-query slug: "quản lý mật khẩu" → "quan-ly-mat-khau"
-        const fullSlug = normalizeDiacritics(originalLower.replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF]/g, '').trim()).replace(/\s+/g, '-');
+        // Build a stripped stop-word set once — used for both full slug and sub-chunks.
+        // VIETNAMESE_STOP_WORDS contains diacritic forms ("tôi", "muốn") so we
+        // also need the diacritics-stripped forms ("toi", "muon") to filter
+        // stripped words.
+        const strippedStopWords = new Set(
+          [...VIETNAMESE_STOP_WORDS].map(w => normalizeDiacritics(w).toLowerCase())
+        );
+        const isStopWord = (w: string) =>
+          VIETNAMESE_STOP_WORDS.has(w) || strippedStopWords.has(w);
+
+        // Full-query slug from MEANINGFUL words only (no stop words).
+        // "quản lý mật khẩu" → "quan-ly-mat-khau"
+        // "tôi muốn một công cụ quản lý căn tin" → "cong-cu-quan-ly-can-tin"
+        // (stop words "tôi", "muốn", "một" stripped — they're noise in GitHub search)
+        const meaningfulViWords = viWords.filter(w => !isStopWord(w));
+        const fullSlug = meaningfulViWords
+          .map(w => normalizeDiacritics(w).toLowerCase().replace(/[^\w-]/g, ''))
+          .filter(w => w.length >= 2)
+          .join('-');
         const isDuplicate = baseParams.some((p) => {
           const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
           return levenshteinSimilarity(n, fullSlug) > 0.7;
@@ -248,7 +372,7 @@ JSON:`;
           baseParams.push({
             query: fullSlug,
             language: filters?.language ?? undefined,
-            minStars: filters?.minStars ?? criteria.minStars,
+            minStars: 0,
             license: filters?.license ?? criteria.preferredLicense ?? undefined,
             sort: 'stars' as const,
             order: 'desc' as const,
@@ -256,27 +380,38 @@ JSON:`;
           });
         }
 
-        // Also try the most meaningful 2-3 word sub-phrases stripped
-        // e.g., "quản lý mật khẩu" → "quan-ly-mat" and "ly-mat-khau"
-        // This catches repos named after sub-phrases
+        // Also try the most meaningful 3-word sub-phrases stripped.
+        // Only generate sub-chunks from meaningful (non-stop-word) words, and
+        // only 3-word chunks — 2-word chunks from diacritics-stripped Vietnamese
+        // are too noisy. Sub-chunks of filler-stripped queries like
+        // "công cụ quản lý căn tin" → "cong-quan-can", "quan-can-tin" are noise
+        // that GitHub matches against random repos. With only 4 meaningful
+        // words (cong, cu, quan, ly, can, tin) we get 1 sub-chunk at most.
         const strippedWords = viWords.map(w => normalizeDiacritics(w).toLowerCase().replace(/[^\w-]/g, ''));
-        for (let start = 0; start < strippedWords.length - 1; start++) {
-          const chunk = strippedWords.slice(start, start + 3).join('-');
-          if (chunk.length >= 4) {
-            const isChunkDupe = baseParams.some((p) => {
-              const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
-              return levenshteinSimilarity(n, chunk) > 0.7;
-            });
-            if (!isChunkDupe) {
-              baseParams.push({
-                query: chunk,
-                language: filters?.language ?? undefined,
-                minStars: filters?.minStars ?? criteria.minStars,
-                license: filters?.license ?? criteria.preferredLicense ?? undefined,
-                sort: 'stars' as const,
-                order: 'desc' as const,
-                perPage: 10,
+        const meaningfulStripped = strippedWords.filter(w =>
+          w.length >= 3 && !isStopWord(w)
+        );
+        // Only generate sub-chunks from meaningful words, and only 3-word chunks
+        // (2-word chunks from diacritics-stripped Vietnamese are too noisy).
+        if (meaningfulStripped.length >= 3) {
+          for (let start = 0; start <= meaningfulStripped.length - 3; start++) {
+            const chunk = meaningfulStripped.slice(start, start + 3).join('-');
+            if (chunk.length >= 8) {
+              const isChunkDupe = baseParams.some((p) => {
+                const n = p.query.toLowerCase().replace(/[^\w\s-]/g, '').trim();
+                return levenshteinSimilarity(n, chunk) > 0.7;
               });
+              if (!isChunkDupe) {
+                baseParams.push({
+                  query: chunk,
+                  language: filters?.language ?? undefined,
+                  minStars: 0,
+                  license: filters?.license ?? criteria.preferredLicense ?? undefined,
+                  sort: 'stars' as const,
+                  order: 'desc' as const,
+                  perPage: 10,
+                });
+              }
             }
           }
         }
@@ -297,7 +432,7 @@ JSON:`;
             baseParams.push({
               query: hyphenated.length >= stripped.length ? hyphenated : stripped,
               language: filters?.language ?? undefined,
-              minStars: filters?.minStars ?? criteria.minStars,
+              minStars: 0,
               license: filters?.license ?? criteria.preferredLicense ?? undefined,
               sort: 'stars' as const,
               order: 'desc' as const,
@@ -433,10 +568,36 @@ Explanation:`;
     refinementText: string,
     originalRequest: string,
     signal?: AbortSignal,
+    precomputedIsVietnamese?: boolean,
   ): Promise<SearchCriteria> {
-    const prompt = `You are a GitHub search expert. A user searched for repositories and wants to refine the results.
+    // ── Vietnamese refinement detection ──
+    // If the original query was Vietnamese OR the refinement text is Vietnamese,
+    // pre-compute a deterministic translation to inject into the LLM prompt.
+    // This ensures the LLM understands Vietnamese refinement text without
+    // guessing translations of domain terms.
+    const isOriginalVietnamese = originalCriteria.originalQuery != null;
+    const refinementIsVietnamese = !isOriginalVietnamese && detectVietnamese(refinementText) >= 0.3;
+    const needsViContext = isOriginalVietnamese || refinementIsVietnamese;
 
-Original request: "${originalRequest}"
+    const preTrans = needsViContext
+      ? quickVietnameseTranslateStructured(refinementText)
+      : null;
+
+    // Build pre-context block for Vietnamese refinement
+    const preContext = preTrans
+      ? `\n\nVietnamese refinement — ALREADY TRANSLATED:\n  English: "${preTrans.translation}"${preTrans.intent ? `\n  Intent: ${preTrans.intent}` : ''}${preTrans.techTerms.length > 0 ? `\n  Tech terms: ${preTrans.techTerms.slice(0, 6).join(', ')}` : ''}${preTrans.dictionaryConcepts.length > 0 ? `\n  Dict concepts: ${preTrans.dictionaryConcepts.slice(0, 6).join(', ')}` : ''}\n\nUse the provided English translation as the basis for the refinement. Do NOT invent different translations.`
+      : '';
+
+    // Include Vietnamese context from original criteria in the prompt
+    const originalViBlock = originalCriteria.englishTranslation
+      ? `\nOriginal English translation: "${originalCriteria.englishTranslation}"${originalCriteria.originalQuery ? `\nOriginal Vietnamese query: "${originalCriteria.originalQuery}"` : ''}${originalCriteria.technicalConcepts?.length ? `\nOriginal tech concepts: ${originalCriteria.technicalConcepts.join(', ')}` : ''}${originalCriteria.expandedKeywords?.length ? `\nOriginal expanded keywords: ${originalCriteria.expandedKeywords.slice(0, 5).join(', ')}` : ''}`
+      : originalCriteria.originalQuery
+        ? `\nOriginal Vietnamese query: "${originalCriteria.originalQuery}"${originalCriteria.technicalConcepts?.length ? `\nOriginal tech concepts: ${originalCriteria.technicalConcepts.join(', ')}` : ''}`
+        : '';
+
+    const prompt = `You are a GitHub search expert. A user searched for repositories and wants to refine the results.${preContext}
+
+Original request: "${originalRequest}"${originalViBlock}
 
 Original search criteria:
 - Keywords: ${originalCriteria.keywords.join(', ')}
@@ -457,7 +618,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
 {
   "keywords": ["adjusted keywords"],
   "technologies": ["adjusted technology list"],
-  "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | other",
+  "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | retail-pos | other",
   "minStars": number,
   "preferredLicense": "mit" | "apache-2.0" | "gpl-3.0" | "bsd-3-clause" | "mpl-2.0" | null,
   "requireRecentActivity": boolean,
@@ -468,7 +629,7 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
     "readmeRelevance": number (0.5-2.0, default 1.0),
     "languageMatch": number (0.5-2.0, default 1.0),
     "licenseCompatibility": number (0.5-2.0, default 1.0)
-  }
+  }${needsViContext ? ',\n  "englishTranslation": "English translation of the refined search intent",\n  "technicalConcepts": ["extracted technical concepts in English"]' : ''}
 }
 
 JSON:`;
@@ -482,7 +643,53 @@ JSON:`;
       preferredLicense?: string | null;
       requireRecentActivity?: boolean;
       weightEmphasis?: WeightEmphasis;
+      englishTranslation?: string;
+      technicalConcepts?: string[];
     }>(raw);
+
+    // ── Propagate Vietnamese fields through refinement ──
+    // After refinement, the original Vietnamese context must still flow into
+    // the ranking engine and buildSearchParamsArray. The LLM may produce new
+    // englishTranslation + technicalConcepts in the refinement response; those
+    // take priority. If the LLM didn't produce them, fall back to the original
+    // criteria values. If neither exists, fall back to preTrans (deterministic).
+    const newTranslation = parsed.englishTranslation
+      ?? originalCriteria.englishTranslation
+      ?? preTrans?.translation;
+
+    const newTechConcepts = parsed.technicalConcepts?.length
+      ? parsed.technicalConcepts
+      : originalCriteria.technicalConcepts?.length
+        ? originalCriteria.technicalConcepts
+        : preTrans?.techTerms;
+
+    // Merge preTrans tech terms into tech concepts (deterministic enrichment)
+    const mergedConcepts = newTechConcepts ? [...newTechConcepts] : [];
+    if (preTrans?.techTerms) {
+      for (const t of preTrans.techTerms) {
+        if (!mergedConcepts.includes(t)) mergedConcepts.push(t);
+      }
+    }
+    if (preTrans?.dictionaryConcepts) {
+      for (const dc of preTrans.dictionaryConcepts) {
+        if (!mergedConcepts.includes(dc)) mergedConcepts.push(dc);
+      }
+    }
+
+    // Build expanded keywords from preTrans + original
+    const expandedKeywords: string[] = [];
+    if (originalCriteria.expandedKeywords) {
+      expandedKeywords.push(...originalCriteria.expandedKeywords);
+    }
+    if (preTrans?.expandedKeywords) {
+      for (const ek of preTrans.expandedKeywords) {
+        if (!expandedKeywords.includes(ek)) expandedKeywords.push(ek);
+      }
+    }
+
+    // Carry forward originalQuery (Vietnamese or original)
+    const originalQuery = originalCriteria.originalQuery
+      ?? (refinementIsVietnamese ? refinementText : undefined);
 
     return {
       keywords: parsed.keywords ?? originalCriteria.keywords,
@@ -493,13 +700,14 @@ JSON:`;
       preferredLicense: parsed.preferredLicense !== undefined ? parsed.preferredLicense : originalCriteria.preferredLicense,
       requireRecentActivity: parsed.requireRecentActivity ?? originalCriteria.requireRecentActivity,
       weightEmphasis: parsed.weightEmphasis,
+      // Vietnamese fields — propagate through refinement
+      ...(originalQuery || newTranslation ? {
+        originalQuery,
+        englishTranslation: newTranslation,
+        technicalConcepts: mergedConcepts.length > 0 ? mergedConcepts : undefined,
+        expandedKeywords: expandedKeywords.length > 0 ? expandedKeywords : undefined,
+      } : {}),
     };
-  }
-
-  async summarizeReadme(readme: string, model: string): Promise<string> {
-    const content = readme.length > 4000 ? readme.slice(0, 4000) : readme;
-    const prompt = `Summarize the following README in 2-3 sentences, focusing on what the project does and its key features:\n\n${content}\n\nSummary:`;
-    return this.ollama.generate(prompt, model, undefined, 1024);
   }
 
   private parseJson<T>(raw: string): T {
