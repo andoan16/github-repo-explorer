@@ -92,7 +92,6 @@ export interface SearchFilters {
   language: string | null;
   license: string | null;
   minStars: number;
-  maxAgeMonths: number | null;
 }
 
 // ── Settings ──

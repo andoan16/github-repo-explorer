@@ -11,12 +11,12 @@ import { useSearch } from './hooks/useSearch';
 import { useBookmarks } from './hooks/useBookmarks';
 import type { SearchFilters, Bookmark, GitHubSearchResult } from '../shared/types';
 
-const defaultFilters: SearchFilters = { language: null, license: null, minStars: 0, maxAgeMonths: null };
+const defaultFilters: SearchFilters = { language: null, license: null, minStars: 0 };
 
 export default function App() {
   const { settings, saveSettings } = useSettings();
   const { status: ollamaStatus, check: checkOllama, refreshModels } = useOllama();
-  const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore } = useSearch();
+  const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore, loadMoreError } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
   // Apply theme based on settings (also persist to localStorage for FOUC prevention)
@@ -122,8 +122,7 @@ export default function App() {
   const filtersChanged = hasSearched && lastQuery !== null && (
     filters.language !== appliedFilters.language ||
     filters.license !== appliedFilters.license ||
-    filters.minStars !== appliedFilters.minStars ||
-    filters.maxAgeMonths !== appliedFilters.maxAgeMonths
+    filters.minStars !== appliedFilters.minStars
   );
 
   const handleApplyFilters = useCallback(() => {
@@ -134,6 +133,14 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     execute(lastQuery, filters);
   }, [execute, filters, lastQuery]);
+
+  const handleRefine = useCallback(async (refinementText: string) => {
+    const minStars = await refine(refinementText);
+    if (minStars !== undefined) {
+      setFilters(f => ({ ...f, minStars }));
+      setAppliedFilters(f => ({ ...f, minStars }));
+    }
+  }, [refine]);
 
   const handleFindSimilar = useCallback((result: GitHubSearchResult) => {
     const parts = [...result.repo.topics, result.repo.description].filter(Boolean);
@@ -255,7 +262,7 @@ export default function App() {
                   <button
                     key={i}
                     className="suggestion-chip"
-                    onClick={() => refine(s)}
+                    onClick={() => handleRefine(s)}
                     disabled={searching}
                   >
                     {s}
@@ -263,32 +270,7 @@ export default function App() {
                 ))}
               </div>
             )}
-            <div className="refinement-bar">
-              <input
-                type="text"
-                placeholder="Refine results, e.g. 'more DevOps focused' or 'ưu tiên Go', 'ít Kubernetes hơn'..."
-                disabled={searching}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-                    refine(e.currentTarget.value.trim());
-                    e.currentTarget.value = '';
-                  }
-                }}
-              />
-              <button
-                className="btn-secondary"
-                disabled={searching}
-                onClick={(e) => {
-                  const input = (e.currentTarget as HTMLButtonElement).previousElementSibling as HTMLInputElement;
-                  if (input.value.trim()) {
-                    refine(input.value.trim());
-                    input.value = '';
-                  }
-                }}
-              >
-                Refine
-              </button>
-            </div>
+
             <div className="results-grid">
               {displayedResults.map((r, i) => (
                 <ResultCard
@@ -310,6 +292,12 @@ export default function App() {
                   <div className="loading-state">
                     <span className="spinner small" />
                     <p>Loading more...</p>
+                  </div>
+                )}
+                {loadMoreError && !loadingMore && (
+                  <div className="load-more-error">
+                    <p>{loadMoreError}</p>
+                    <button className="btn-secondary" onClick={() => loadMore()}>Retry</button>
                   </div>
                 )}
               </>
