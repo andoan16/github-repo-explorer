@@ -29,15 +29,42 @@ export interface ReadmeCacheMetrics {
 }
 
 const README_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_README_CACHE_SIZE = 200; // LRU eviction when exceeding this size
 const MAX_README_BYTES = 8000;
 
-/** Retry transient GitHub API 5xx errors with exponential backoff. */
+/** Retry transient GitHub API errors (5xx + 429 rate limit) with exponential backoff.
+ *  For 429 (rate limit), respects the x-ratelimit-reset header to wait until
+ *  the quota resets — but only if the wait is short (< 30s) to avoid hanging
+ *  the UI. Longer waits are surfaced as errors so the user knows to add a token. */
 async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2): Promise<Response> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const res = await fetch(url, init);
+
+    // 429 rate limit: check if we can wait and retry
+    if (res.status === 429 && attempt < maxRetries) {
+      const resetEpoch = res.headers.get('x-ratelimit-reset');
+      if (resetEpoch) {
+        const waitMs = parseInt(resetEpoch, 10) * 1000 - Date.now();
+        // Only auto-wait if reset is within 15s — longer waits should surface
+        // as an error so the user isn't stuck with a spinning loader
+        if (waitMs > 0 && waitMs <= 15000) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, waitMs);
+            if (init.signal) {
+              init.signal.addEventListener('abort', () => {
+                clearTimeout(timer);
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+              }, { once: true });
+            }
+          });
+          continue; // retry after waiting
+        }
+      }
+      return res; // can't auto-wait, surface the 429 to caller
+    }
+
+    // 5xx: retry with exponential backoff
     if (res.status < 500 || attempt === maxRetries) return res;
-    // Exponential backoff: 500ms, 1s
-    // Respect abort signal during backoff delay
     const delay = 500 * Math.pow(2, attempt);
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, delay);
@@ -64,6 +91,27 @@ export class GitHubClient {
   private static readmeMisses = 0;
 
   constructor(private token: string) {}
+
+  /** Set a readme cache entry, evicting expired/LRU entries if at capacity. */
+  private static setReadmeCache(repoId: number, text: string | null): void {
+    // Evict expired entries first, then LRU, when at capacity
+    if (GitHubClient.readmeCache.size >= MAX_README_CACHE_SIZE) {
+      let evicted = false;
+      for (const [k, v] of GitHubClient.readmeCache) {
+        if (Date.now() - v.timestamp > README_CACHE_TTL_MS) {
+          GitHubClient.readmeCache.delete(k);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) {
+        // LRU: delete oldest entry (first in Map insertion order)
+        const oldest = GitHubClient.readmeCache.keys().next().value;
+        if (oldest !== undefined) GitHubClient.readmeCache.delete(oldest);
+      }
+    }
+    GitHubClient.readmeCache.set(repoId, { text, timestamp: Date.now() });
+  }
 
   private requestInit(overrides?: { signal?: AbortSignal }): RequestInit {
     return {
@@ -103,7 +151,11 @@ export class GitHubClient {
   async searchRepos(params: SearchParams, signal?: AbortSignal): Promise<{ repos: GitHubRepo[]; totalCount: number; rateLimitRemaining: number }> {
     const qParts: string[] = [params.query];
     if (params.language) qParts.push(`language:${params.language}`);
-    if (params.minStars) qParts.push(`stars:>=${params.minStars}`);
+    // NOTE: minStars is NOT sent to GitHub API as a query qualifier.
+    // High star thresholds (e.g. stars:>=30000) combined with keyword queries
+    // can return 0 results because GitHub requires ALL terms to match.
+    // Instead, minStars is applied as a post-filter in ipc-handlers.ts,
+    // which preserves result quality while still honoring the star filter.
     if (params.license) qParts.push(`license:${params.license}`);
 
     const q = qParts.join(' ');
@@ -116,10 +168,12 @@ export class GitHubClient {
     const res = await fetchWithRetry(url, this.requestInit({ signal }));
     const rateLimitRemaining = parseInt(res.headers.get('x-ratelimit-remaining') ?? '0', 10);
 
-    if (res.status === 403) {
+    if (res.status === 403 || res.status === 429) {
       const resetEpoch = res.headers.get('x-ratelimit-reset');
+      const resetMs = resetEpoch ? parseInt(resetEpoch, 10) * 1000 - Date.now() : 0;
       const resetDate = resetEpoch ? new Date(parseInt(resetEpoch, 10) * 1000).toLocaleTimeString() : 'unknown';
-      throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}. Add a token for higher limits.`);
+      const waitSec = Math.max(0, Math.ceil(resetMs / 1000));
+      throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}${waitSec > 0 ? ` (in ~${waitSec}s)` : ''}. Add a GitHub token in settings for 30x higher limits (5000 req/hour vs 60 req/hour unauthenticated).`);
     }
     if (res.status === 422) {
       throw new Error('GitHub could not parse the search query. Try a different description.');
@@ -157,6 +211,10 @@ export class GitHubClient {
         GitHubClient.readmeHits++;
         return cached.text;
       }
+      // Expired entry — evict to keep cache size bounded
+      if (cached) {
+        GitHubClient.readmeCache.delete(repoId);
+      }
     }
 
     try {
@@ -170,7 +228,7 @@ export class GitHubClient {
       if (!res.ok) {
         // Cache negative result too (null) so we don't retry 404s
         if (repoId !== undefined) {
-          GitHubClient.readmeCache.set(repoId, { text: null, timestamp: Date.now() });
+          GitHubClient.setReadmeCache(repoId, null);
         }
         GitHubClient.readmeMisses++;
         return null;
@@ -196,7 +254,7 @@ export class GitHubClient {
             ? chunks.slice(0, MAX_README_BYTES) + '\n\n... (truncated)'
             : chunks;
           if (repoId !== undefined) {
-            GitHubClient.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
+            GitHubClient.setReadmeCache(repoId, result);
           }
           return result;
         }
@@ -206,7 +264,7 @@ export class GitHubClient {
       const result = text.length > MAX_README_BYTES ? text.slice(0, MAX_README_BYTES) + '\n\n... (truncated)' : text;
 
       if (repoId !== undefined) {
-        GitHubClient.readmeCache.set(repoId, { text: result, timestamp: Date.now() });
+        GitHubClient.setReadmeCache(repoId, result);
       }
       GitHubClient.readmeMisses++;
       return result;

@@ -35,6 +35,14 @@ export class OllamaClient {
   }
 
   async generate(prompt: string, model: string, signal?: AbortSignal, maxTokens?: number): Promise<string> {
+    // Combine user-provided signal with a 120s timeout so that:
+    // 1. Search cancellation still aborts the Ollama call immediately
+    // 2. If the user signal lacks a timeout, we still prevent infinite hangs
+    const timeout = AbortSignal.timeout(120_000);
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeout])
+      : timeout;
+
     const res = await fetch(`${this.baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -44,7 +52,7 @@ export class OllamaClient {
         stream: false,
         options: { temperature: 0.3, num_predict: maxTokens ?? 512 },
       }),
-      signal: signal ?? AbortSignal.timeout(120_000),
+      signal: combinedSignal,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

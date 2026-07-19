@@ -55,9 +55,12 @@ class SearchCache {
       return null;
     }
 
-    // LRU: move to end (most recently used)
-    this.cache.delete(key);
-    this.cache.set(key, entry);
+    // LRU: move to end (most recently used) — but only if Map has enough
+    // entries to warrant the overhead. Skip for small caches.
+    if (this.cache.size > 10) {
+      this.cache.delete(key);
+      this.cache.set(key, entry);
+    }
     this._hits++;
     return entry;
   }
@@ -162,10 +165,20 @@ interface CriteriaCacheEntry {
 const CRITERIA_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_CRITERIA_CACHE_SIZE = 100;
 
+/** Metrics for CriteriaCache, tracking expired hits separately from cold misses. */
+export interface CriteriaCacheMetrics {
+  hits: number;
+  misses: number;
+  /** Entries that were valid but expired (TTL) — counted separately from cold misses */
+  expiredHits: number;
+  size: number;
+}
+
 class CriteriaCache {
   private cache = new Map<string, CriteriaCacheEntry>();
   private _hits = 0;
   private _misses = 0;
+  private _expiredHits = 0;
 
   /** Normalize a user request into a cache key (lowercase, collapsed whitespace). */
   static key(userRequest: string): string {
@@ -182,7 +195,7 @@ class CriteriaCache {
     if (Date.now() - entry.timestamp > CRITERIA_CACHE_TTL_MS) {
       this.cache.delete(key);
       // Count as expired hit, not cold miss
-      this._misses++;
+      this._expiredHits++;
       return null;
     }
     // LRU touch
@@ -212,8 +225,14 @@ class CriteriaCache {
     this.cache.set(key, { criteria, timestamp: Date.now() });
   }
 
-  getMetrics(): { hits: number; misses: number; size: number } {
-    return { hits: this._hits, misses: this._misses, size: this.cache.size };
+  getMetrics(): CriteriaCacheMetrics {
+    return { hits: this._hits, misses: this._misses, expiredHits: this._expiredHits, size: this.cache.size };
+  }
+
+  resetMetrics(): void {
+    this._hits = 0;
+    this._misses = 0;
+    this._expiredHits = 0;
   }
 }
 
