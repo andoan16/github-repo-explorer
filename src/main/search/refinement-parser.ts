@@ -6,10 +6,12 @@ import { detectVietnamese, detectVietnameseRefinement } from './vietnamese';
  * or signals that the caller should bypass the LLM and sort directly.
  */
 export interface DetectedRefinement {
-  type: 'emphasis' | 'raw-sort';
+  type: 'emphasis' | 'raw-sort' | 'filter';
   emphasis?: WeightEmphasis;
   sortKey?: 'stars' | 'updated_at' | 'forks';
   sortDesc?: boolean;
+  /** Minimum star count filter — removes repos below this threshold */
+  minStars?: number;
 }
 
 const KNOWN_LANGUAGES = new Set([
@@ -59,6 +61,19 @@ export class RefinementParser {
     // ── License preference — "MIT license", "open source only" ──
     const licenseMatch = this.detectLicensePreference(lower);
     if (licenseMatch) return licenseMatch;
+
+    // ── Star threshold filter ("above 10,000 stars", ">5k", etc.)
+    //     This is a hard filter, not just a re-ranking emphasis — repos below
+    //     the threshold are removed entirely. Must come before isStarHeavy so
+    //     "above 5000 stars" matches as a filter rather than falling through
+    //     to the generic popularity emphasis.
+    const starThreshold = this.detectStarThreshold(lower);
+    if (starThreshold !== null) {
+      return {
+        type: 'filter',
+        minStars: starThreshold,
+      };
+    }
 
     // ── Heavy star emphasis (but not pure-sort) — before topicAdjustment so
     //     "more popular" still maps to star-heavy, not generic topic boost.
@@ -253,6 +268,72 @@ export class RefinementParser {
       /\bstars?\s+(?:matter|important|heavy)\b/,
     ];
     return patterns.some((p) => p.test(text));
+  }
+
+  /**
+   * Detect star threshold patterns like "above 10,000 stars", ">5k", "1000+",
+   * "more than 500 stars", etc. Returns the numeric threshold or null.
+   */
+  private detectStarThreshold(text: string): number | null {
+    const patterns = [
+      /(?:above|over|more\s+than|at\s+least|only\s+>\s*)\s*(\d[\d,]*)\s*(?:k|K|stars?)?/i,
+      />\s*(\d[\d,]*)\s*(?:k|K|stars?)?/i,
+      /(\d[\d,]*)\s*(?:k|K)\+?\s*(?:stars?)?/i,
+      /(?:only|just)\s+(\d[\d,]*)\s*(?:k|K)?\s*(?:stars?\s*$)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) {
+        let numStr = match[1].replace(/,/g, '');
+        let num = parseInt(numStr, 10);
+        if (isNaN(num) || num <= 0) continue;
+
+        // If the pattern matched with k/K suffix (or text contains k after the number)
+        const fullMatch = match[0].toLowerCase();
+        if (/\d\s*k/i.test(fullMatch)) {
+          num *= 1000;
+        }
+
+        return num;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Determine whether a refinement text is narrowing (reducing result set)
+   * vs broadening (exploring laterally). Used for feedback-loop context
+   * in suggestion generation.
+   */
+  static isNarrowing(text: string): boolean {
+    const lower = text.toLowerCase().trim();
+    const narrowingPatterns = [
+      /\b(?:only|just)\s+\w/i,
+      /\b(?:above|over|more\s+than|at\s+least|minimum|min)\s+\d/i,
+      />\s*\d/,
+      /\d\s*k?\+?\s*(?:stars?$)/i,
+      /\bfilter\s+to\b/i,
+      /\b(?:less|fewer|remove|exclude|without|hide|drop)\b/i,
+      /\b(?:narrow|narrower|specific|precise|restrict)\b/i,
+    ];
+    const broadeningPatterns = [
+      /\b(?:more|broader|wider|expand|explore|similar|related|also|alternative)\b/i,
+      /\b(?:less|fewer)\s+(?:popular|stars?)\b/i,
+    ];
+
+    // If it matches a broadening pattern, it's not narrowing
+    if (broadeningPatterns.some((p) => p.test(lower))) return false;
+    // If it matches a narrowing pattern, it is narrowing
+    if (narrowingPatterns.some((p) => p.test(lower))) return true;
+
+    // Detected deterministic refinements are narrowing by default
+    const detected = new RefinementParser().detect(text);
+    if (detected) {
+      return detected.type === 'filter' || detected.type === 'raw-sort';
+    }
+    return false;
   }
 
   private isRecencyHeavy(text: string): boolean {

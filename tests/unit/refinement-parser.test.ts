@@ -165,4 +165,89 @@ describe('RefinementParser', () => {
       expect(r).toBeNull();
     });
   });
+
+  describe('star threshold filter', () => {
+    it('detects "above 10,000 stars" as filter', () => {
+      const r = parser.detect('above 10,000 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(10000);
+    });
+
+    it('detects "above 500 stars" as filter', () => {
+      const r = parser.detect('above 500 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(500);
+    });
+
+    it('detects "over 1000 stars" as filter', () => {
+      const r = parser.detect('over 1000 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(1000);
+    });
+
+    it('detects "more than 5000 stars" as filter', () => {
+      const r = parser.detect('more than 5000 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(5000);
+    });
+
+    it('detects "at least 500 stars" as filter', () => {
+      const r = parser.detect('at least 500 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(500);
+    });
+
+    it('detects "10k stars" as filter with k multiplier', () => {
+      const r = parser.detect('10k stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(10000);
+    });
+
+    it('detects "5K stars" as filter with capital K', () => {
+      const r = parser.detect('5K stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(5000);
+    });
+
+    it('detects ">5000" as filter', () => {
+      const r = parser.detect('>5000');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(5000);
+    });
+
+    it('detects "1k+" as filter with bonus suffix', () => {
+      const r = parser.detect('1k+');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(1000);
+    });
+
+    it('detects "above 10,000 stars" (with commas)', () => {
+      const r = parser.detect('above 10,000 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(10000);
+    });
+
+    it('detects "above 50000 stars" (large number)', () => {
+      const r = parser.detect('above 50000 stars');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(50000);
+    });
+
+    it('does NOT match "most popular" as a star threshold (should be emphasis)', () => {
+      const r = parser.detect('most popular');
+      expect(r?.type).toBe('emphasis');
+      expect(r?.minStars).toBeUndefined();
+    });
+
+    it('does NOT match "highest stars" as filter (should be raw-sort)', () => {
+      const r = parser.detect('highest stars');
+      expect(r?.type).toBe('raw-sort');
+    });
+
+    it('detects "above 100 stars" as filter even with whitespace', () => {
+      const r = parser.detect('  above 100 stars  ');
+      expect(r?.type).toBe('filter');
+      expect(r?.minStars).toBe(100);
+    });
+  });
 });
