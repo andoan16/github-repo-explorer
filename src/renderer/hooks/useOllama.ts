@@ -5,9 +5,9 @@ export function useOllama() {
   const [status, setStatus] = useState<OllamaStatus>({ connected: false, models: [] });
   const [checking, setChecking] = useState(false);
 
-  const check = useCallback(async (baseUrl?: string) => {
+  const check = useCallback(async (baseUrl?: string, apiKey?: string) => {
     setChecking(true);
-    const res = await window.repoExplorer.checkOllama(baseUrl);
+    const res = await window.repoExplorer.checkOllama(baseUrl, apiKey);
     setChecking(false);
     if (res.ok && res.data) setStatus(res.data);
     else setStatus({ connected: false, error: res.error, models: [] });

@@ -1,30 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import type { AppSettings, OllamaModel } from '../../shared/types';
+import type { AppSettings, OllamaModel, OllamaMode } from '../../shared/types';
+
+/** Default base URL for Ollama Cloud (without /api — the client appends /api/...). */
+const CLOUD_BASE_URL = 'https://ollama.com';
 
 interface Props {
   settings: AppSettings;
   ollamaModels: OllamaModel[];
   ollamaConnected: boolean;
+  ollamaError?: string;
+  ollamaChecking: boolean;
   githubUser: string | null;
   githubValid: boolean | null;
   onSave: (s: Partial<AppSettings>) => Promise<boolean>;
-  onCheckOllama: (url?: string) => void;
+  onCheckOllama: (url?: string, apiKey?: string) => void;
   onCheckGitHub: (token?: string) => void;
   onClose: () => void;
 }
 
 export default function Settings({
-  settings, ollamaModels, ollamaConnected, githubUser, githubValid,
+  settings, ollamaModels, ollamaConnected, ollamaError, ollamaChecking, githubUser, githubValid,
   onSave, onCheckOllama, onCheckGitHub, onClose,
 }: Props) {
+  const [ollamaMode, setOllamaMode] = useState<OllamaMode>(settings.ollamaMode);
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollamaBaseUrl);
+  const [ollamaApiKey, setOllamaApiKey] = useState(settings.ollamaApiKey);
   const [ollamaModel, setOllamaModel] = useState(settings.ollamaModel);
   const [githubToken, setGithubToken] = useState(settings.githubToken);
   const [theme, setTheme] = useState<AppSettings['theme']>(settings.theme);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setOllamaMode(settings.ollamaMode);
     setOllamaUrl(settings.ollamaBaseUrl);
+    setOllamaApiKey(settings.ollamaApiKey);
     setGithubToken(settings.githubToken);
     setTheme(settings.theme);
   }, [settings]);
@@ -39,11 +48,44 @@ export default function Settings({
     }
   }, [ollamaModels]);
 
+  // When switching to Cloud mode, auto-fill the cloud base URL if the user is
+  // still on the default local URL. When switching back to Local, restore the
+  // default local URL if the field still holds the cloud URL.
+  const handleModeSwitch = (mode: OllamaMode) => {
+    setOllamaMode(mode);
+    if (mode === 'cloud' && ollamaUrl === 'http://localhost:11434') {
+      setOllamaUrl(CLOUD_BASE_URL);
+    } else if (mode === 'local' && ollamaUrl === CLOUD_BASE_URL) {
+      setOllamaUrl('http://localhost:11434');
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
-    const ok = await onSave({ ollamaBaseUrl: ollamaUrl, ollamaModel, githubToken, theme });
+    // When in cloud mode, preserve the already-saved API key if the local
+    // field is still empty (e.g. user opened Settings before the async
+    // settings load completed, so the local state never got synced). This
+    // prevents accidentally overwriting a saved key with an empty string.
+    const effectiveApiKey = ollamaMode === 'cloud'
+      ? (ollamaApiKey || settings.ollamaApiKey)
+      : '';
+    // Same guard for GitHub token: if local field is empty but a saved token
+    // exists, preserve it.
+    const effectiveGithubToken = githubToken || settings.githubToken;
+    const ok = await onSave({
+      ollamaBaseUrl: ollamaUrl,
+      ollamaApiKey: effectiveApiKey,
+      ollamaMode,
+      ollamaModel,
+      githubToken: effectiveGithubToken,
+      theme,
+    });
     setSaving(false);
     if (ok) onClose();
+  };
+
+  const handleTest = () => {
+    onCheckOllama(ollamaUrl, ollamaMode === 'cloud' ? ollamaApiKey : undefined);
   };
 
   return (
@@ -100,21 +142,58 @@ export default function Settings({
         <section className="settings-section">
           <h3>Ollama Connection</h3>
           <label className="settings-field">
+            Mode
+            <div className="theme-toggle">
+              {(['local', 'cloud'] as const).map((m) => (
+                <button
+                  key={m}
+                  className={`theme-option ${ollamaMode === m ? 'theme-option-active' : ''}`}
+                  onClick={() => handleModeSwitch(m)}
+                  type="button"
+                >
+                  {m === 'local' ? 'Local' : 'Ollama Cloud'}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label className="settings-field">
             Base URL
             <div className="field-row">
               <input
                 type="text"
                 value={ollamaUrl}
                 onChange={(e) => setOllamaUrl(e.target.value)}
-                placeholder="http://localhost:11434"
+                placeholder={ollamaMode === 'cloud' ? CLOUD_BASE_URL : 'http://localhost:11434'}
               />
-              <button className="btn-secondary" onClick={() => onCheckOllama(ollamaUrl)}>
-                Test
+              <button className="btn-secondary" onClick={handleTest} disabled={ollamaChecking}>
+                {ollamaChecking ? 'Testing...' : 'Test'}
               </button>
             </div>
           </label>
-          {ollamaConnected && (
+          {ollamaMode === 'cloud' && (
+            <label className="settings-field">
+              API Key
+              <div className="field-row">
+                <input
+                  type="password"
+                  value={ollamaApiKey}
+                  onChange={(e) => setOllamaApiKey(e.target.value)}
+                  placeholder="Ollama Cloud API key (ollama.com/settings/keys)"
+                />
+              </div>
+              <small className="settings-hint">
+                Create a key at <a href="https://ollama.com/settings/keys" target="_blank" rel="noreferrer">ollama.com/settings/keys</a> and paste it here. Stored encrypted on your machine.
+              </small>
+            </label>
+          )}
+          {ollamaChecking && (
+            <div className="settings-info">Checking connection…</div>
+          )}
+          {!ollamaChecking && ollamaConnected && (
             <div className="settings-success">Connected — {ollamaModels.length} model(s) available</div>
+          )}
+          {!ollamaChecking && !ollamaConnected && ollamaError && (
+            <div className="settings-error">{ollamaError}</div>
           )}
           <label className="settings-field">
             Model

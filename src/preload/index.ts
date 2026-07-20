@@ -4,7 +4,7 @@ import { IPC } from '../shared/types';
 const api = {
   getSettings: () => ipcRenderer.invoke(IPC.GET_SETTINGS),
   saveSettings: (settings: unknown) => ipcRenderer.invoke(IPC.SAVE_SETTINGS, settings),
-  checkOllama: (baseUrl?: string) => ipcRenderer.invoke(IPC.OLLAMA_CHECK, baseUrl),
+  checkOllama: (baseUrl?: string, apiKey?: string) => ipcRenderer.invoke(IPC.OLLAMA_CHECK, baseUrl, apiKey),
   listModels: () => ipcRenderer.invoke(IPC.OLLAMA_MODELS),
   checkGitHub: (token?: string) => ipcRenderer.invoke(IPC.GITHUB_CHECK, token),
   search: (request: string, filters?: unknown) => ipcRenderer.invoke(IPC.SEARCH, request, filters),

@@ -124,7 +124,7 @@ function abortPriorSearch(gen: number): void {
 
 function getOllamaClient(cfg?: AppSettings) {
   const c = cfg ?? settings.load();
-  return new OllamaClient(c.ollamaBaseUrl);
+  return new OllamaClient(c.ollamaBaseUrl, c.ollamaApiKey || undefined);
 }
 
 function getGitHubClient(cfg?: AppSettings) {
@@ -457,9 +457,9 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  ipcMain.handle(IPC.OLLAMA_CHECK, async (_event, baseUrl?: string) => {
+  ipcMain.handle(IPC.OLLAMA_CHECK, async (_event, baseUrl?: string, apiKey?: string) => {
     try {
-      const client = baseUrl ? new OllamaClient(baseUrl) : getOllamaClient();
+      const client = baseUrl ? new OllamaClient(baseUrl, apiKey || undefined) : getOllamaClient();
       const status = await client.checkConnection();
       return { ok: true, data: status };
     } catch (err) {

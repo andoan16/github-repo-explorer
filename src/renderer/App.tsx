@@ -15,7 +15,7 @@ const defaultFilters: SearchFilters = { language: null, license: null, minStars:
 
 export default function App() {
   const { settings, saveSettings } = useSettings();
-  const { status: ollamaStatus, check: checkOllama, refreshModels } = useOllama();
+  const { status: ollamaStatus, checking: ollamaChecking, check: checkOllama, refreshModels } = useOllama();
   const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore, loadMoreError } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
@@ -76,15 +76,34 @@ export default function App() {
     }
   }, [results, visibleCount]);
 
+  // Check Ollama connection whenever the Ollama URL or API key changes
+  // (initial load + after saving settings). Prevents the search bar from
+  // staying disabled after the user updates Ollama config in Settings.
   useEffect(() => {
-    checkOllama(settings.ollamaBaseUrl);
+    if (!settings.ollamaBaseUrl) return;
+    checkOllama(settings.ollamaBaseUrl, settings.ollamaApiKey);
+  }, [checkOllama, settings.ollamaBaseUrl, settings.ollamaApiKey]);
+
+  // Verify GitHub token on initial load and whenever it changes (e.g. after
+  // saving a new token in Settings). Avoids the "invalid" false-positive that
+  // happened because the initial check ran with an empty token before the
+  // async settings load completed.
+  useEffect(() => {
+    if (!settings.githubToken) {
+      setGithubChecked(false);
+      setGithubUser(null);
+      return;
+    }
+    let cancelled = false;
     window.repoExplorer.checkGitHub(settings.githubToken).then((res) => {
+      if (cancelled) return;
       setGithubChecked(true);
       if (res.ok && res.data) {
         setGithubUser(res.data.valid ? res.data.user : null);
       }
     });
-  }, []);
+    return () => { cancelled = true; };
+  }, [settings.githubToken]);
 
   const handleCheckGitHub = useCallback(async (token?: string) => {
     const t = token ?? settings.githubToken;
@@ -96,8 +115,8 @@ export default function App() {
     return res.ok;
   }, [settings.githubToken]);
 
-  const handleCheckOllama = useCallback(async (url?: string) => {
-    const ok = await checkOllama(url);
+  const handleCheckOllama = useCallback(async (url?: string, apiKey?: string) => {
+    const ok = await checkOllama(url, apiKey);
     if (ok) await refreshModels();
     return ok;
   }, [checkOllama, refreshModels]);
@@ -367,6 +386,8 @@ export default function App() {
           settings={settings}
           ollamaModels={ollamaStatus.models}
           ollamaConnected={ollamaStatus.connected}
+          ollamaError={ollamaStatus.error}
+          ollamaChecking={ollamaChecking}
           githubUser={githubUser}
           githubValid={githubChecked ? !!githubUser : null}
           onSave={saveSettings}

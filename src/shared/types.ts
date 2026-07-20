@@ -95,9 +95,16 @@ export interface SearchFilters {
 }
 
 // ── Settings ──
+/** Ollama backend mode.
+ *  - 'local': connect to a local Ollama daemon (default, no auth).
+ *  - 'cloud': connect to Ollama Cloud (https://ollama.com/api) with an API key. */
+export type OllamaMode = 'local' | 'cloud';
+
 export interface AppSettings {
   githubToken: string;
   ollamaBaseUrl: string;
+  ollamaApiKey: string; // Bearer token for Ollama Cloud (empty for local mode)
+  ollamaMode: OllamaMode;
   ollamaModel: string;
   theme: 'light' | 'dark' | 'system';
 }
@@ -105,6 +112,8 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   githubToken: '',
   ollamaBaseUrl: 'http://localhost:11434',
+  ollamaApiKey: '',
+  ollamaMode: 'local',
   ollamaModel: 'llama3.2',
   theme: 'system',
 };
