@@ -173,17 +173,20 @@ export function mineNegativeSpace(
     return { summary: '', gaps: [] };
   }
 
+  // ── Pre-compute search targets for top repos ──
+  const searchTargets = topRepos.map((repo) => {
+    const desc = (repo.description ?? '').toLowerCase();
+    const topics = repo.topics.map((t) => t.toLowerCase()).join(' ');
+    const name = repo.full_name.toLowerCase();
+    return `${desc} ${topics} ${name}`;
+  });
+
   // ── Check presence in top repos ──
   const gaps: { keyword: string; presence: number }[] = [];
 
   for (const claim of allClaims) {
     let hits = 0;
-    for (const repo of topRepos) {
-      const desc = (repo.description ?? '').toLowerCase();
-      const topics = repo.topics.map((t) => t.toLowerCase()).join(' ');
-      const name = repo.full_name.toLowerCase();
-      const searchTarget = `${desc} ${topics} ${name}`;
-
+    for (const searchTarget of searchTargets) {
       if (searchTarget.includes(claim)) {
         hits++;
       }
