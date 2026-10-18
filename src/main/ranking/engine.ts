@@ -60,6 +60,8 @@ const VIET_STOP_WORDS = new Set([
   'cái', 'những', 'các', 'vậy', 'thì', 'mà', 'nhé', 'ạ',
 ]);
 
+const PERMISSIVE_LICENSES = new Set(['mit', 'apache-2.0', 'bsd-2-clause', 'bsd-3-clause', 'isc', 'unlicense']);
+
 /** Precomputed lowercase metadata per repo — avoids repeated .toLowerCase() calls in scoring. */
 interface PrecomputedRepo {
   descLower: string;
@@ -266,11 +268,12 @@ export class RankingEngine {
   private matchLicense(repoLicense: string | null, preferred: string | null): number {
     if (!preferred) return 0.8;
     if (!repoLicense) return 0.5;
-    if (repoLicense.toLowerCase() === preferred.toLowerCase()) return 1;
-    const permissive = ['mit', 'apache-2.0', 'bsd-2-clause', 'bsd-3-clause', 'isc', 'unlicense'];
-    const isPermissive = permissive.includes(repoLicense.toLowerCase());
-    const prefPermissive = permissive.includes(preferred.toLowerCase());
-    if (isPermissive && prefPermissive) return 0.85;
+    const repoLower = repoLicense.toLowerCase();
+    const prefLower = preferred.toLowerCase();
+    if (repoLower === prefLower) return 1;
+    if (PERMISSIVE_LICENSES.has(repoLower) && PERMISSIVE_LICENSES.has(prefLower)) {
+      return 0.85;
+    }
     return 0.4;
   }
 
