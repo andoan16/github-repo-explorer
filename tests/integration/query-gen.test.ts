@@ -71,7 +71,7 @@ describe('QueryGenerator (integration)', () => {
 
     expect(params.language).toBe('typescript');
     expect(params.license).toBe('apache-2.0');
-    expect(params.minStars).toBe(100);
+    expect(params.minStars).toBe(0); // client-side minStars filter means API minStars should be 0
   });
 
   it('generates match explanations', async () => {
