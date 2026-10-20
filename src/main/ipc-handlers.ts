@@ -308,8 +308,8 @@ function deduplicateBatch(suggestions: string[]): string[] {
   return result;
 }
 
-const LANG_KEYWORDS = ['typescript', 'javascript', 'python', 'go', 'rust', 'java', 'kotlin', 'swift', 'ruby', 'php', 'scala', 'elixir', 'haskell', 'clojure', 'dart', 'lua', 'zig', 'c++', 'c#'];
-const LICENSE_KEYWORDS = ['mit', 'apache', 'gpl', 'bsd', 'mpl', 'lgpl', 'agpl', 'unlicense', 'isc'];
+const LANG_KEYWORDS = new Set(['typescript', 'javascript', 'python', 'go', 'rust', 'java', 'kotlin', 'swift', 'ruby', 'php', 'scala', 'elixir', 'haskell', 'clojure', 'dart', 'lua', 'zig', 'c++', 'c#']);
+const LICENSE_KEYWORDS = new Set(['mit', 'apache', 'gpl', 'bsd', 'mpl', 'lgpl', 'agpl', 'unlicense', 'isc']);
 
 /** #5: Ensures suggestion diversity — each dimension bucket gets at least one suggestion. */
 function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[] {
@@ -317,8 +317,23 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
 
   const lower = suggestions.map((s) => s.toLowerCase());
 
-  const hasLang = lower.some((s) => LANG_KEYWORDS.some((k) => s.includes(k)));
-  const hasLicense = lower.some((s) => LICENSE_KEYWORDS.some((k) => s.includes(k)));
+  // Strip common punctuation before splitting to match correctly
+  const PUNC_REGEX = /[,().:\-[\]]/g;
+
+  const hasLang = lower.some((s) => {
+    const words = s.replace(PUNC_REGEX, ' ').split(' ');
+    for (let i = 0; i < words.length; i++) {
+      if (LANG_KEYWORDS.has(words[i])) return true;
+    }
+    return false;
+  });
+  const hasLicense = lower.some((s) => {
+    const words = s.replace(PUNC_REGEX, ' ').split(' ');
+    for (let i = 0; i < words.length; i++) {
+      if (LICENSE_KEYWORDS.has(words[i])) return true;
+    }
+    return false;
+  });
   const hasQuality = lower.some((s) =>
     /stars?|popular|above|over|more than|\d+k/i.test(s)
   );
