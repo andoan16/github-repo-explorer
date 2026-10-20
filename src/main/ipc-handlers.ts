@@ -506,18 +506,22 @@ export function registerIpcHandlers(): void {
       const github = getGitHubClient(cfg);
       const qg = new QueryGenerator(ollama, cfg.ollamaModel);
 
-      // ── Fast-path: skip LLM for simple atomic queries ──
-      if (isSimpleQuery(userRequest)) {
-        // Vietnamese simple-query fix: translate before sending to GitHub API.
-        // Without this, Vietnamese function words become mandatory AND-match terms.
-        let simpleQuery = userRequest;
-        if (detectVietnamese(userRequest) >= 0.3) {
-          const translated = quickVietnameseTranslate(userRequest);
-          if (translated) simpleQuery = translated;
+      // Vietnamese simple-query fix: translate before sending to GitHub API.
+      // Without this, Vietnamese function words become mandatory AND-match terms.
+      let effectiveRequest = userRequest;
+      const viConfidence = detectVietnamese(userRequest);
+      const isVietnamesePhase1 = viConfidence >= 0.3;
+      if (isVietnamesePhase1) {
+        const translated = quickVietnameseTranslate(userRequest);
+        if (translated) {
+          effectiveRequest = translated;
         }
+      }
 
+      // ── Fast-path: skip LLM for simple atomic queries ──
+      if (isSimpleQuery(effectiveRequest)) {
         // Use raw query directly as keywords — no LLM needed
-        const simpleKeywords = [simpleQuery.trim()];
+        const simpleKeywords = [effectiveRequest.trim()];
         const simpleCriteria: SearchCriteria = {
           keywords: simpleKeywords,
           technologies: [],
@@ -528,7 +532,7 @@ export function registerIpcHandlers(): void {
           requireRecentActivity: false,
         };
 
-        const fastKeywords = extractFastKeywords(simpleQuery);
+        const fastKeywords = extractFastKeywords(effectiveRequest);
         const fastSearchParams = {
           query: fastKeywords[0],
           language: filters?.language ?? undefined,
@@ -563,16 +567,7 @@ export function registerIpcHandlers(): void {
       // Vietnamese Phase 1 fix: translate Vietnamese text before extracting fast keywords.
       // Without this, Vietnamese function words (tôi, muốn, cho) become mandatory GitHub
       // match terms, producing zero results for Vietnamese queries.
-      let phase1Query = userRequest;
-      const viConfidence = detectVietnamese(userRequest);
-      const isVietnamesePhase1 = viConfidence >= 0.3;
-      if (isVietnamesePhase1) {
-        const translated = quickVietnameseTranslate(userRequest);
-        if (translated) {
-          phase1Query = translated;
-        }
-      }
-      const fastKeywords = extractFastKeywords(phase1Query);
+      const fastKeywords = extractFastKeywords(effectiveRequest);
       // Use only the first (most comprehensive) phrase as query.
       // Joining all phrases into one query creates a monster string with
       // repeated terms that GitHub API interprets as requiring ALL words,
