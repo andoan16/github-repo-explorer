@@ -31,7 +31,7 @@ const MAX_CACHE_SIZE = 100; // was 50 — each search fills 3-6 slots, 50 was to
  * Avoids redundant API calls when the same query is made within a short window.
  * Tracks hit/miss metrics for performance monitoring.
  */
-class SearchCache {
+export class SearchCache {
   private cache = new Map<string, CacheEntry>();
   private _hits = 0;
   private _misses = 0;
@@ -174,7 +174,7 @@ export interface CriteriaCacheMetrics {
   size: number;
 }
 
-class CriteriaCache {
+export class CriteriaCache {
   private cache = new Map<string, CriteriaCacheEntry>();
   private _hits = 0;
   private _misses = 0;

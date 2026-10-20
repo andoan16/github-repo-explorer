@@ -50,10 +50,10 @@ The app window opens automatically. Configure your GitHub token and Ollama URL i
 - **Lazy explanations** — Match explanations generated on demand when viewing repo details, keeping search fast
 - **Weighted ranking** — 6-signal relevance scoring with adjustable emphasis per refinement
 - **Bookmarks** — Save repositories to a persistent bookmark list for later reference; view, revisit, or remove saved repos anytime
-- **Repo comparison** — Select two or more repos and compare them side-by-side across stars, forks, language, license, topics, and match explanation
 - **One-click clone** — Clone any repository to your local machine directly from the app, with a file-picker dialog to choose the destination
 - **Copy clone command** — Copy the full `git clone` command to clipboard for any repository
 - **Find similar** — Use any result as a seed to search for similar repositories
+- **Infinite scroll** — Automatically loads more results as you scroll; serves from in-memory cache first, then fetches from GitHub
 - **Theme support** — Choose between light, dark, or system-following theme in Settings
 
 ## How It Works
@@ -61,7 +61,7 @@ The app window opens automatically. Configure your GitHub token and Ollama URL i
 1. **You type a description** — natural language, no special syntax (supports English and Vietnamese)
 2. **Fast keyword extraction** — stop-word removal and compound-term detection produce an instant GitHub query; for known tech names (e.g. `docker`, `react`) the LLM is skipped entirely
 3. **LLM enriches the query** — Ollama generates 3 alternative keyword queries, plus technologies, intent, and license preferences; Vietnamese queries get additional deterministic enrichment (dictionary translation, synonym expansion, diacritics-stripped variants)
-4. **Parallel GitHub searches** — all queries deduplicated by Jaccard similarity, then run simultaneously with bounded concurrency; results merged and deduplicated by repo ID
+4. **Parallel GitHub searches** — all queries deduplicated by Jaccard similarity (≥50% overlap for search queries, ≥33% for suggestions), then run simultaneously with bounded concurrency; results merged and deduplicated by repo ID
 5. **READMEs are prefetched** — for top 20 candidates by stars, with a 30-minute shared cache
 6. **Ranking engine scores each result** — combining 6 signals (weights adjustable via refinement):
    - Semantic keyword/topic match (30%)
@@ -175,11 +175,11 @@ User types query  ──►  SearchBar  ──►  IPC: search(request, filters)
                                     Rank results ──► Return top 10
 ```
 
-- **Simple queries** (known tech names like `docker`, `react`) skip the LLM entirely — they go straight to GitHub search with keyword extraction.
+- **Simple queries** (known tech names like `docker`, `react`) skip the LLM entirely — they go straight to GitHub search with keyword extraction and return immediately.
 - **Vietnamese queries** get a local dictionary translation before the fast keyword search, so Phase 1 isn't blocked waiting for the LLM.
 - The `SearchCache` (TTL 15 min, LRU 100 entries) avoids redundant GitHub API calls for identical queries.
 
-#### 2. LLM Enrichment (Phase 2)
+#### 2. LLM Enrichment (Phase 2 — runs inline, unified response)
 
 ```
 User request ──►  OllamaClient.generate()
@@ -218,7 +218,8 @@ User request ──►  OllamaClient.generate()
 
 - The LLM produces **3 keyword query variations** plus metadata (technologies, intent, license preference).
 - Vietnamese queries get **deterministic enrichment**: local tech-term extraction, synonym expansion, diacritics-stripped search variants — no extra LLM calls.
-- All queries (fast-path + LLM + Vietnamese variants) are **deduplicated** by Jaccard similarity (≥33% overlap → duplicate) before firing GitHub API calls.
+- Search queries are **deduplicated** by Jaccard similarity (≥50% overlap for search queries, ≥33% for suggestions) before firing GitHub API calls.
+- Phase 1 and Phase 2 now run as a **unified search** — the handler awaits LLM enrichment, merges all results (fast-path + LLM queries), and returns enriched results in a single response. The renderer shows a loading spinner until results are ready.
 - The `CriteriaCache` (TTL 30 min) caches LLM-extracted criteria for identical queries.
 
 #### 3. README Prefetch + Ranking
@@ -338,9 +339,10 @@ User clicks "Why this match?" ──► IPC: GENERATE_EXPLANATION
 | **QueryGenerator** | `src/main/search/query-gen.ts` | LLM-powered criteria extraction, query generation, refinement, and suggestion generation. Vietnamese expansion pipeline. |
 | **RankingEngine** | `src/main/ranking/engine.ts` | 6-signal weighted relevance scoring with min-heap top-K. Adjustable weights via `WeightEmphasis`. |
 | **SearchCache** | `src/main/search/cache.ts` | TTL + LRU cache for GitHub search results (15 min) and LLM criteria (30 min). Metrics tracking. |
+| **PerformanceTracker** | `src/main/search/perf.ts` | Phase-level timing for search pipeline (ollama, github, ranking, readme) with cache metric aggregation. |
 | **Vietnamese Expander** | `src/main/search/vietnamese.ts` | Vietnamese detection, dictionary translation, tech-term extraction, synonym expansion, diacritics normalization. |
 | **RefinementParser** | `src/main/search/refinement-parser.ts` | Deterministic refinement detection (sort/emphasis patterns) — skips LLM when possible. |
-| **IPC Handlers** | `src/main/ipc-handlers.ts` | Central orchestrator. Handles search pipeline, refinement, pagination, lazy details, bookmarks, clone. Abort controllers for search supersession. |
+| **IPC Handlers** | `src/main/ipc-handlers.ts` | Central orchestrator. Handles search pipeline, refinement, pagination, lazy details, bookmarks, clone. Abort controllers for search supersession. Unified Phase 1+2 search (awaits LLM enrichment before returning results). |
 | **Preload** | `src/preload/index.ts` | `contextBridge` API — exposes `search()`, `refine()`, `searchMore()`, `getReadme()`, etc. to the renderer. |
 | **useSearch hook** | `src/renderer/hooks/useSearch.ts` | React state management for search. Tracks results, loading, paginating, applied refinements. Deduplicates suggestion chips. |
 
@@ -350,6 +352,7 @@ User clicks "Why this match?" ──► IPC: GENERATE_EXPLANATION
 |-------|----------|-----|----------|----------|
 | Search results | `SearchCache` (main process) | 15 min | 100 entries | LRU + expired-first |
 | LLM criteria | `CriteriaCache` (main process) | 30 min | 100 entries | LRU + expired-first |
+| Vietnamese translations | `VietnameseTranslationCache` (main process) | 30 min | 200 entries | LRU + expired-first |
 | README content | `GitHubClient.readmeCache` (static) | 30 min | unbounded | TTL expiry only |
 | Bookmarks | `BookmarkStore` (disk) | persistent | unbounded | N/A |
 | Settings | `SettingsStore` (disk) | persistent | N/A | N/A |
@@ -446,7 +449,7 @@ repo-explorer/
 │   │   ├── main.tsx             # React entry point
 │   │   ├── components/          # UI components
 │   │   │   ├── SearchBar.tsx    # Natural-language input
-│   │   │   ├── ResultCard.tsx   # Repository result card (bookmark, compare, find similar, clone)
+│   │   │   ├── ResultCard.tsx   # Repository result card (bookmark, find similar, clone)
 │   │   │   ├── RepoDetail.tsx   # Full detail modal (README, explanation, clone)
 │   │   │   ├── Settings.tsx     # Settings panel (GitHub token, Ollama URL, model, theme)
 │   │   │   ├── StatusBar.tsx    # Connection status (Ollama + GitHub)
@@ -455,8 +458,7 @@ repo-explorer/
 │   │   │   ├── BookmarkButton.tsx    # Toggle bookmark on a result
 │   │   │   ├── BookmarksPanel.tsx    # Bookmark list & management
 │   │   │   ├── CloneButton.tsx       # Clone repo to local machine
-│   │   │   ├── CopyButton.tsx        # Copy git clone command
-│   │   │   └── ComparisonView.tsx    # Side-by-side repo comparison
+│   │   │   └── CopyButton.tsx        # Copy git clone command
 │   │   ├── hooks/               # React hooks
 │   │   │   ├── useSettings.ts
 │   │   │   ├── useOllama.ts
@@ -470,7 +472,7 @@ repo-explorer/
 │   ├── mocks/                   # Test doubles
 │   │   ├── ollama.ts
 │   │   └── github.ts
-│   ├── unit/                    # ~353 test cases
+│   ├── unit/                    # 351 test cases
 │   │   ├── ranking.test.ts      # Ranking engine (29 cases)
 │   │   ├── query-gen.test.ts    # Query extraction & search params (12 cases)
 │   │   ├── vietnamese.test.ts   # Vietnamese detection, translation, synonyms (225 cases)
@@ -479,16 +481,16 @@ repo-explorer/
 │   │   ├── refinement-dedup.test.ts   # Batch dedup logic (10 cases)
 │   │   ├── negative-space.test.ts     # Negative-space gap mining (12 cases)
 │   │   ├── result-stats.test.ts       # Result set statistics (6 cases)
-│   │   ├── readme-images.test.ts      # README image extraction (20 cases)
+│   │   ├── readme-images.test.ts      # README image extraction (18 cases)
 │   │   └── bookmarks.test.ts    # Bookmark store logic (5 cases)
-│   └── integration/             # ~68 test cases
+│   └── integration/             # 65 test cases
 │       ├── e2e.test.ts          # Full pipeline + multi-query + refinement (10 cases)
 │       ├── error-handling.test.ts  # Error scenarios (13 cases)
 │       ├── github.test.ts       # GitHub auth + search + README (7 cases)
 │       ├── ollama.test.ts       # Ollama connection + generation (5 cases)
 │       ├── query-gen.test.ts    # Query extraction + param building (9 cases)
-│       ├── vietnamese-search.test.ts # Vietnamese search pipeline (18 cases)
-│       └── accuracy-pipeline.test.ts # Ranking accuracy (6 cases)
+│       ├── vietnamese-search.test.ts # Vietnamese search pipeline (17 cases)
+│       └── accuracy-pipeline.test.ts # Ranking accuracy (4 cases)
 ├── scripts/
 │   └── build-main.mjs           # esbuild config for main + preload
 ├── package.json                 # Dependencies, scripts, electron-builder config
@@ -534,3 +536,4 @@ The app handles these failure modes:
 - **Offline mode**: Search previously fetched results without network
 - **Model download UI**: Pull Ollama models from within the app
 - **Repository insights**: Show commit frequency, contributor count, release cadence
+- **Repo comparison**: Select two or more repos and compare them side-by-side across stars, forks, language, license, topics, and match explanation
