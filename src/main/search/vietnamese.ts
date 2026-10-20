@@ -154,15 +154,18 @@ const VIETNAMESE_FILLER_SUFFIXES = [
 export function normalizeVietnameseQuery(text: string): string {
   let trimmed = text.trim();
   for (const pattern of VIETNAMESE_FILLER_PREFIXES) {
-    const match = trimmed.match(pattern);
+    const match = pattern.exec(trimmed);
     if (match) {
       const remainder = trimmed.slice(match[0].length).trim();
       if (remainder.length >= 4) { trimmed = remainder; break; }
     }
   }
   for (const pattern of VIETNAMESE_FILLER_SUFFIXES) {
-    const stripped = trimmed.replace(pattern, '').trim();
-    if (stripped.length >= 4 && stripped !== trimmed) { trimmed = stripped; break; }
+    const match = pattern.exec(trimmed);
+    if (match) {
+      const stripped = trimmed.slice(0, match.index).trim();
+      if (stripped.length >= 4) { trimmed = stripped; break; }
+    }
   }
   return trimmed;
 }
@@ -1461,16 +1464,21 @@ const TECH_TERMS: Record<string, string[]> = {
  * Returns canonical English tech terms found in the text (e.g., "docker" → "docker").
  * Pure function, no LLM call.
  */
+const TECH_TERMS_REGEXES = new Map<string, RegExp>();
+for (const term of Object.keys(TECH_TERMS)) {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match at word boundary or after /-+. for compound terms like ci/cd
+  TECH_TERMS_REGEXES.set(term, new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, 'i'));
+}
+
 export function extractTechTerms(text: string): string[] {
   const lower = text.toLowerCase();
   const found: string[] = [];
   const seen = new Set<string>();
 
   for (const [term, expansions] of Object.entries(TECH_TERMS)) {
-    // Use word-boundary-aware match so "script" doesn't match "typescript"
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match at word boundary or after /-+. for compound terms like ci/cd
-    const pattern = new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, 'i');
+    // Use precompiled regex
+    const pattern = TECH_TERMS_REGEXES.get(term)!;
     if (pattern.test(lower)) {
       for (const expansion of expansions) {
         if (!seen.has(expansion)) {
@@ -1709,6 +1717,14 @@ const VIETNAMESE_GITHUB_SYNONYMS: Record<string, string[]> = {
  * recall without extra GitHub API calls — the synonyms become expandedKeywords
  * in SearchCriteria, which `buildSearchParamsArray` deduplicates.
  */
+const VIETNAMESE_SYNONYMS_REGEXES = new Map<string, RegExp>();
+for (const viPhrase of Object.keys(VIETNAMESE_GITHUB_SYNONYMS)) {
+  if (!viPhrase.includes(' ')) {
+    const escaped = viPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    VIETNAMESE_SYNONYMS_REGEXES.set(viPhrase, new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i'));
+  }
+}
+
 export function expandGithubSynonyms(
   originalLower: string,
   translatedParts: string[],
@@ -1736,8 +1752,7 @@ export function expandGithubSynonyms(
     } else if (wordsConsumedByCompound.has(viPhrase)) {
       matches = false;
     } else {
-      const escaped = viPhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i');
+      const pattern = VIETNAMESE_SYNONYMS_REGEXES.get(viPhrase)!;
       matches = pattern.test(originalLower);
     }
     if (matches) {

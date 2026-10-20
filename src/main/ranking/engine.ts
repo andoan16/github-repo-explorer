@@ -60,6 +60,8 @@ const VIET_STOP_WORDS = new Set([
   'cái', 'những', 'các', 'vậy', 'thì', 'mà', 'nhé', 'ạ',
 ]);
 
+const PERMISSIVE_LICENSES = new Set(['mit', 'apache-2.0', 'bsd-2-clause', 'bsd-3-clause', 'isc', 'unlicense']);
+
 /** Precomputed lowercase metadata per repo — avoids repeated .toLowerCase() calls in scoring. */
 interface PrecomputedRepo {
   descLower: string;
@@ -266,11 +268,12 @@ export class RankingEngine {
   private matchLicense(repoLicense: string | null, preferred: string | null): number {
     if (!preferred) return 0.8;
     if (!repoLicense) return 0.5;
-    if (repoLicense.toLowerCase() === preferred.toLowerCase()) return 1;
-    const permissive = ['mit', 'apache-2.0', 'bsd-2-clause', 'bsd-3-clause', 'isc', 'unlicense'];
-    const isPermissive = permissive.includes(repoLicense.toLowerCase());
-    const prefPermissive = permissive.includes(preferred.toLowerCase());
-    if (isPermissive && prefPermissive) return 0.85;
+    const repoLower = repoLicense.toLowerCase();
+    const prefLower = preferred.toLowerCase();
+    if (repoLower === prefLower) return 1;
+    if (PERMISSIVE_LICENSES.has(repoLower) && PERMISSIVE_LICENSES.has(prefLower)) {
+      return 0.85;
+    }
     return 0.4;
   }
 
@@ -396,11 +399,24 @@ export class RankingEngine {
         const words = phrase.split(/\s+/);
         if (words.length >= 2) {
           // Sliding window of 2-word and 3-word phrases
-          for (let w = 2; w <= Math.min(3, words.length); w++) {
-            for (let i = 0; i <= words.length - w; i++) {
-              const subPhrase = words.slice(i, i + w).join(' ');
-              if (subPhrase.length >= 4 && desc.includes(subPhrase)) score += 0.04;
-              if (subPhrase.length >= 4 && topics.some(t => t.includes(subPhrase.replace(/\s+/g, '-')))) score += 0.03;
+          for (let i = 0; i <= words.length - 2; i++) {
+            const w1 = words[i];
+            const w2 = words[i + 1];
+            const subPhrase2 = w1 + ' ' + w2;
+            if (subPhrase2.length >= 4) {
+              if (desc.includes(subPhrase2)) score += 0.04;
+              const subPhrase2Hyphen = w1 + '-' + w2;
+              if (topics.some(t => t.includes(subPhrase2Hyphen))) score += 0.03;
+            }
+
+            if (i <= words.length - 3) {
+              const w3 = words[i + 2];
+              const subPhrase3 = subPhrase2 + ' ' + w3;
+              if (subPhrase3.length >= 4) {
+                if (desc.includes(subPhrase3)) score += 0.04;
+                const subPhrase3Hyphen = w1 + '-' + w2 + '-' + w3;
+                if (topics.some(t => t.includes(subPhrase3Hyphen))) score += 0.03;
+              }
             }
           }
         }
@@ -418,11 +434,24 @@ export class RankingEngine {
         if (desc.includes(phrase)) score += 0.05;
         const words = phrase.split(/\s+/);
         if (words.length >= 2) {
-          for (let w = 2; w <= Math.min(3, words.length); w++) {
-            for (let i = 0; i <= words.length - w; i++) {
-              const subPhrase = words.slice(i, i + w).join(' ');
-              if (subPhrase.length >= 4 && desc.includes(subPhrase)) score += 0.03;
-              if (subPhrase.length >= 4 && topics.some(t => t.includes(subPhrase.replace(/\s+/g, '-')))) score += 0.02;
+          for (let i = 0; i <= words.length - 2; i++) {
+            const w1 = words[i];
+            const w2 = words[i + 1];
+            const subPhrase2 = w1 + ' ' + w2;
+            if (subPhrase2.length >= 4) {
+              if (desc.includes(subPhrase2)) score += 0.03;
+              const subPhrase2Hyphen = w1 + '-' + w2;
+              if (topics.some(t => t.includes(subPhrase2Hyphen))) score += 0.02;
+            }
+
+            if (i <= words.length - 3) {
+              const w3 = words[i + 2];
+              const subPhrase3 = subPhrase2 + ' ' + w3;
+              if (subPhrase3.length >= 4) {
+                if (desc.includes(subPhrase3)) score += 0.03;
+                const subPhrase3Hyphen = w1 + '-' + w2 + '-' + w3;
+                if (topics.some(t => t.includes(subPhrase3Hyphen))) score += 0.02;
+              }
             }
           }
         }
