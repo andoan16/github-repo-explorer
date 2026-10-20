@@ -152,7 +152,7 @@ function extractFastKeywords(text: string): string[] {
   // Preserve meaningful tech punctuation: / (CI/CD), - (self-hosted), + (C++), . (Next.js)
   // Only strip punctuation that GitHub search doesn't handle: commas, parens, quotes, etc.
   const cleaned = text.toLowerCase()
-    .replace(/[^\w\s\/\-\+\.]/g, ' ')   // keep / - + .
+    .replace(/[^\p{L}\p{N}_\s\/\-\+\.]/gu, ' ')   // keep / - + . and unicode letters/numbers
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -275,7 +275,7 @@ function normalizeWords(text: string): string[] {
     .toLowerCase()
     // Preserve tech-significant punctuation (/-+. in compound terms like ci/cd, self-hosted, c++)
     // before splitting. Strip only non-structural punctuation (parens, quotes, commas).
-    .replace(/[^\w\s\/\-\+\.]/g, '')
+    .replace(/[^\p{L}\p{N}_\s\/\-\+\.]/gu, '')
     .split(/\s+/)
     .filter((w) => w.length >= 2 && !STOP_WORDS_DEDUP.has(w));
 }
