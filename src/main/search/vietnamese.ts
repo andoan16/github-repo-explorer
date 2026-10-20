@@ -154,15 +154,18 @@ const VIETNAMESE_FILLER_SUFFIXES = [
 export function normalizeVietnameseQuery(text: string): string {
   let trimmed = text.trim();
   for (const pattern of VIETNAMESE_FILLER_PREFIXES) {
-    const match = trimmed.match(pattern);
+    const match = pattern.exec(trimmed);
     if (match) {
       const remainder = trimmed.slice(match[0].length).trim();
       if (remainder.length >= 4) { trimmed = remainder; break; }
     }
   }
   for (const pattern of VIETNAMESE_FILLER_SUFFIXES) {
-    const stripped = trimmed.replace(pattern, '').trim();
-    if (stripped.length >= 4 && stripped !== trimmed) { trimmed = stripped; break; }
+    const match = pattern.exec(trimmed);
+    if (match) {
+      const stripped = trimmed.slice(0, match.index).trim();
+      if (stripped.length >= 4) { trimmed = stripped; break; }
+    }
   }
   return trimmed;
 }
