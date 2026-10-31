@@ -1,6 +1,6 @@
 # Repo Explorer
 
-Discover GitHub repositories using natural-language descriptions via a local LLM (Ollama).
+Discover GitHub repositories using natural-language descriptions via an embedded local LLM (Zero-config) or custom Ollama.
 
 Type what you need — "I want a self-hosted CI/CD platform with Docker support" — and the app uses a local LLM to understand your intent, search GitHub, and rank the best matches with explanations.
 
@@ -12,7 +12,7 @@ Type what you need — "I want a self-hosted CI/CD platform with Docker support"
 | Frontend | React 18 + TypeScript |
 | Markdown Rendering | marked |
 | Build | Vite (renderer) + esbuild (main) |
-| LLM Runtime | Ollama (local) |
+| LLM Runtime | Embedded Local LLM (`node-llama-cpp`, Metal/CPU) + Optional Ollama |
 | GitHub | REST API (authenticated) |
 | Testing | Vitest |
 | Packaging | electron-builder (NSIS installer / DMG) |
@@ -21,10 +21,9 @@ Type what you need — "I want a self-hosted CI/CD platform with Docker support"
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) 20+ (v24.15.0 recommended)
-- [Ollama](https://ollama.com/) installed and running locally
-- At least one Ollama model pulled (e.g., `ollama pull llama3.2`)
+- [Node.js](https://nodejs.org/) 20+
 - A [GitHub Personal Access Token](https://github.com/settings/tokens) (classic token with `repo` and `read:user` scopes)
+- *(Optional)* [Ollama](https://ollama.com/) if you prefer using external Ollama models instead of the built-in embedded LLM
 
 ## Quick Start
 
@@ -43,7 +42,8 @@ The app window opens automatically. Configure your GitHub token and Ollama URL i
 
 ## Features
 
-- **Multi-query search** — Ollama generates 3 alternative keyword queries from your description, run as parallel GitHub searches with automatic deduplication
+- **Tiered Embedded LLMs & Auto-Recommendation** — Choose between 3 local models from small to large (Qwen2.5 0.5B, 1.5B, and 3B); the app automatically inspects your RAM and CPU cores to recommend the optimal model for your machine
+- **Multi-query search** — Ollama or the local embedded LLM generates 3 alternative keyword queries from your description, run as parallel GitHub searches with automatic deduplication
 - **Vietnamese search** — Vietnamese queries are detected, translated, and enriched with synonym expansion and diacritics-stripped variants for broad recall on GitHub's English-dominant index
 - **Smart fast path** — simple/atomic queries (e.g. `docker`, `react`) skip the LLM entirely and go straight to GitHub search
 - **Iterative refinement** — Refine results inline (e.g. "more DevOps focused", "prefer Go", "sort by stars") to re-rank cached repos without re-hitting GitHub; deterministic refinements (sort, emphasis) skip the LLM entirely

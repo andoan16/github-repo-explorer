@@ -152,4 +152,16 @@ describe('RefinementValidator', () => {
     expect(result.valid).toEqual([]);
     expect(result.dropped).toEqual([]);
   });
+
+  it('rejects dummy placeholder suggestions like "suggest 1" and "suggestion 2"', () => {
+    const repos = [makeRepo()];
+    const result = validator.validate(
+      ['suggest 1', 'suggestion 2', 'example 1', 'valid refinement phrase'],
+      repos,
+      {},
+    );
+    expect(result.valid).toEqual(['valid refinement phrase']);
+    expect(result.dropped).toHaveLength(3);
+    expect(result.dropped.every((d) => d.kind === 'redundancy')).toBe(true);
+  });
 });

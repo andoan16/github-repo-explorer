@@ -4,6 +4,8 @@ import { IPC } from '../shared/types';
 const api = {
   getSettings: () => ipcRenderer.invoke(IPC.GET_SETTINGS),
   saveSettings: (settings: unknown) => ipcRenderer.invoke(IPC.SAVE_SETTINGS, settings),
+  getLlmStatus: () => ipcRenderer.invoke(IPC.LLM_STATUS),
+  downloadEmbeddedModel: (modelId?: string) => ipcRenderer.invoke(IPC.LLM_DOWNLOAD_MODEL, modelId),
   checkOllama: (baseUrl?: string, apiKey?: string) => ipcRenderer.invoke(IPC.OLLAMA_CHECK, baseUrl, apiKey),
   listModels: () => ipcRenderer.invoke(IPC.OLLAMA_MODELS),
   checkGitHub: (token?: string) => ipcRenderer.invoke(IPC.GITHUB_CHECK, token),
@@ -18,6 +20,13 @@ const api = {
     ipcRenderer.invoke(IPC.GET_README, { owner, repo, branch, repoId }),
   generateExplanation: (repoName: string, repoDescription: string | null, requestContext: string) =>
     ipcRenderer.invoke(IPC.GENERATE_EXPLANATION, { repoName, repoDescription, requestContext }),
+  onLlmStatusUpdate: (callback: (status: any) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => {
+      callback(data);
+    };
+    ipcRenderer.on(IPC.LLM_STATUS_UPDATE, handler);
+    return () => { ipcRenderer.removeListener(IPC.LLM_STATUS_UPDATE, handler); };
+  },
   onSuggestionsUpdate: (callback: (suggestions: string[]) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { suggestions: string[] }) => {
       callback(data.suggestions);

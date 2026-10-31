@@ -1,8 +1,9 @@
 import type { SearchCriteria, SearchParams, WeightEmphasis } from '../../shared/types';
-import type { OllamaClient } from '../ollama/client';
+import type { ILlmClient } from '../llm/types';
 import type { GitHubRepo } from '../../shared/types';
 import { computeResultStatistics, mineNegativeSpace } from './result-stats';
 import { detectVietnamese, extractTechTerms, expandGithubSynonyms, classifyVietnameseIntent, normalizeDiacritics, quickVietnameseTranslateStructured, normalizeVietnameseQuery, ENGLISH_GENERIC_TERMS, VIETNAMESE_STOP_WORDS } from './vietnamese';
+import { detectAlternativeRequest } from './intent-decomposer';
 
 const INTENT_ANGLES: Record<string, string> = {
   'web-app': 'Prioritize suggestions about framework choice, hosting model, frontend vs full-stack, and deployment complexity.',
@@ -57,7 +58,7 @@ const EXPANDED_KEYWORD_STOPWORDS = new Set([
 ]);
 
 export class QueryGenerator {
-  constructor(private ollama: OllamaClient, private model: string) {}
+  constructor(private ollama: ILlmClient, private model: string = 'default') {}
 
   async extractCriteria(userDescription: string, signal?: AbortSignal, precomputedIsVietnamese?: boolean): Promise<SearchCriteria> {
     // Use pre-computed flag if available to avoid redundant detectVietnamese() call
@@ -91,7 +92,18 @@ export class QueryGenerator {
       ? `\n\nThe user wrote in Vietnamese. Translate and reason about their actual intent.\nOriginal Vietnamese: "${userDescription}"${preTrans?.dictionaryConcepts?.length ? `\nDictionary hints (reference only — improve or replace as needed): ${preTrans.dictionaryConcepts.slice(0, 6).join(', ')}` : ''}\n\nIMPORTANT: Do NOT just translate word-by-word. Reason about what kind of GitHub repository the user actually needs, AND include the specific domain term in at least one query. For example, "quản lý căn tin" (canteen management) needs a point-of-sale / inventory / sales system — include "canteen" or "food service" in at least one query alongside broader terms like "point-of-sale" and "inventory". This ensures the search finds repos directly about the user's domain, not just generic POS/inventory systems.\n\nInclude englishTranslation + technicalConcepts fields. The englishTranslation should be a clean domain phrase (no filler like "I want" or "I need").`
       : '';
 
-    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${preContext}
+    const altDetection = detectAlternativeRequest(userDescription);
+    const altContext = altDetection.isAlternative
+      ? `\n\nCRITICAL INSTRUCTION - REPLACEMENT / ALTERNATIVE QUERY:
+The user is looking for an open-source alternative or replacement for "${altDetection.benchmark || 'commercial software'}".
+- DO NOT require "${altDetection.benchmark || 'the brand'}" in all search queries! Most open-source alternatives describe themselves by their features (e.g. "open source pdf editor", "client-side pdf toolkit", "annotate sign merge pdf") and NEVER mention the competitor brand.
+- Core domain to search: "${altDetection.cleanCoreDomain || 'open-source tool'}".
+- Include specific feature capabilities in "targetFeatures" (e.g. ${JSON.stringify(altDetection.suggestedFeatures?.slice(0, 5) || ['editor', 'toolkit'])}).
+- Include GitHub topic tags in "topicTags" (e.g. ${JSON.stringify(altDetection.suggestedTopics?.slice(0, 4) || ['tools'])}).
+- One query should be category-focused (e.g. "open source ${altDetection.cleanCoreDomain || 'editor'}"), one feature-focused (e.g. "${altDetection.suggestedFeatures?.slice(0, 3).join(' ') || 'toolkit'}"), and one broad.`
+      : '';
+
+    const prompt = `You are a GitHub search expert. Convert this user request into search criteria for the GitHub API.${preContext}${altContext}
 
 User request: "${userDescription}"
 
@@ -105,7 +117,10 @@ Return ONLY valid JSON — no markdown, no code fences, no commentary:
   "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | retail-pos | other",
   "minStars": number (0-5000, default 0),
   "preferredLicense": "mit" | "apache-2.0" | "gpl-3.0" | "bsd-3-clause" | "mpl-2.0" | null,
-  "requireRecentActivity": boolean${isVietnamese ? ',\n  "englishTranslation": "English translation of the user\'s request",\n  "technicalConcepts": ["extracted technical concepts in English, e.g., ci-cd, monitoring, password-manager, self-hosted, point-of-sale, inventory"]' : ''}
+  "requireRecentActivity": boolean,
+  "benchmarkEntity": ${altDetection.benchmark ? `"${altDetection.benchmark}"` : 'null'},
+  "targetFeatures": ["concrete features/capabilities, e.g. annotate, sign, merge, split, compress"],
+  "topicTags": ["github topic tags, e.g. pdf-editor, pdf-tools"]${isVietnamese ? ',\n  "englishTranslation": "English translation of the user\'s request",\n  "technicalConcepts": ["extracted technical concepts in English, e.g., ci-cd, monitoring, password-manager, self-hosted, point-of-sale, inventory"]' : ''}
 }
 
 JSON:`;
@@ -122,6 +137,9 @@ JSON:`;
       requireRecentActivity?: boolean;
       englishTranslation?: string;
       technicalConcepts?: string[];
+      benchmarkEntity?: string | null;
+      targetFeatures?: string[];
+      topicTags?: string[];
     }>(raw);
 
     // Build keywords from searchQueries array (new format), fall back to legacy searchQuery/keywords
@@ -246,14 +264,44 @@ JSON:`;
       }
     }
 
+    const benchmarkEntity = altDetection.benchmark ?? (criteria.benchmarkEntity || undefined);
+    const targetFeatures = [
+      ...(altDetection.suggestedFeatures ?? []),
+      ...(criteria.targetFeatures ?? []),
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    const topicTags = [
+      ...(altDetection.suggestedTopics ?? []),
+      ...(criteria.topicTags ?? []),
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    // If it's an alternative/replacement request, sanitize queries to ensure
+    // the commercial competitor brand does NOT contaminate every single GitHub query!
+    if (benchmarkEntity) {
+      const benchmarkLower = benchmarkEntity.toLowerCase();
+      const hasCleanQuery = queries.some(q => !q.toLowerCase().includes(benchmarkLower));
+      if (!hasCleanQuery) {
+        const coreQuery = altDetection.cleanCoreDomain
+          ? `open source ${altDetection.cleanCoreDomain}`
+          : queries[0].replace(new RegExp(benchmarkLower, 'gi'), '').replace(/\s+/g, ' ').trim();
+        if (coreQuery.length >= 3) {
+          queries.unshift(coreQuery);
+          queries = queries.slice(0, 3);
+        }
+      }
+    }
+
     return {
       keywords: queries.slice(0, 3),
       technologies: criteria.technologies ?? [],
-      intent: criteria.intent ?? 'other',
+      intent: criteria.intent ?? (altDetection.isAlternative ? 'desktop-app' : 'other'),
       useCase: userDescription,
       minStars: typeof criteria.minStars === 'number' ? criteria.minStars : 0,
       preferredLicense: criteria.preferredLicense ?? null,
       requireRecentActivity: criteria.requireRecentActivity ?? false,
+      benchmarkEntity: benchmarkEntity || undefined,
+      targetFeatures: targetFeatures.length > 0 ? targetFeatures : undefined,
+      topicTags: topicTags.length > 0 ? topicTags : undefined,
       ...(isVietnamese ? {
         expandedKeywords: expandedKeywords.length > 0 ? expandedKeywords : undefined,
         originalQuery: userDescription,
@@ -443,6 +491,51 @@ JSON:`;
       }
     }
 
+    // ── Topic-based query (e.g., topic:pdf-editor) ──
+    // Direct topic queries match repos that developers explicitly categorized as that tool,
+    // which surfaces high-quality applications (like pdfcraft) even if their description uses different words.
+    if (criteria.topicTags && criteria.topicTags.length > 0) {
+      for (const topic of criteria.topicTags.slice(0, 2)) {
+        const cleanTopic = topic.toLowerCase().replace(/[^a-z0-9-]/g, '').trim();
+        if (cleanTopic.length >= 3) {
+          const topicQuery = `topic:${cleanTopic}`;
+          const isDup = baseParams.some((p) => p.query === topicQuery);
+          if (!isDup) {
+            baseParams.push({
+              query: topicQuery,
+              language: filters?.language ?? undefined,
+              minStars: 0,
+              license: filters?.license ?? criteria.preferredLicense ?? undefined,
+              sort: 'stars' as const,
+              order: 'desc' as const,
+              perPage: 10,
+            });
+          }
+        }
+      }
+    }
+
+    // ── Feature-based composite query (e.g., "pdf editor annotate sign merge") ──
+    if (criteria.targetFeatures && criteria.targetFeatures.length >= 2) {
+      const topFeatures = criteria.targetFeatures.slice(0, 3).join(' ');
+      const featureQuery = criteria.keywords[0]
+        ? `${criteria.keywords[0]} ${topFeatures}`
+        : topFeatures;
+      const cleanFeat = featureQuery.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+      const isDup = baseParams.some((p) => p.query.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim() === cleanFeat);
+      if (!isDup && cleanFeat.length >= 6) {
+        baseParams.push({
+          query: cleanFeat,
+          language: filters?.language ?? undefined,
+          minStars: 0,
+          license: filters?.license ?? criteria.preferredLicense ?? undefined,
+          sort: 'stars' as const,
+          order: 'desc' as const,
+          perPage: 10,
+        });
+      }
+    }
+
     return baseParams;
   }
 
@@ -508,7 +601,14 @@ ${topRepos.map((r, i) => `${i + 1}. ${r.full_name} (★${r.stars.toLocaleString(
       negSpaceBlock = `Missing from results: ${negSpace.gaps.slice(0, 5).map(g => `${g.keyword} (${g.presence}%)`).join(', ')}. Suggest broader terms for these gaps.`;
     }
 
-    const prompt = `You are a GitHub search expert. A user searched GitHub and received ${resultCount} results. Suggest 3-6 natural-language refinement phrases they could use to narrow or refocus their results.
+    const topLang = stats.languageDistribution !== 'N/A'
+      ? (stats.languageDistribution.split(' ')[0] || '').replace(/[^a-zA-Z0-9#+]/g, '') || 'TypeScript'
+      : 'TypeScript';
+    const topLic = stats.licenseDistribution !== 'N/A'
+      ? (stats.licenseDistribution.split(' ')[0] || '').toUpperCase().replace(/[^a-zA-Z0-9-]/g, '') || 'MIT'
+      : 'MIT';
+
+    const prompt = `You are a GitHub search expert. A user searched GitHub and received ${resultCount} results. Suggest 3-5 natural-language refinement phrases they could use to narrow or refocus their results.
 
 Original search: "${userRequest}"
 Keywords used: ${keywords.join(', ')}
@@ -533,17 +633,23 @@ ${heterogeneityDirective}
 
 ${directionHint}
 
-Each suggestion should be a short phrase like "only ${stats.languageDistribution.split(',')[0]?.split(' ')[0] ?? 'Go'} projects" or "only MIT-licensed" or "remove unlicensed repos" or "filter to active projects (recently updated)". Make them diverse — different angles (license, language, scope, complexity, use-case). Reference the statistics above when possible so every suggestion is grounded in real data.
+Each suggestion should be a short phrase like "only ${topLang} projects" or "only ${topLic}-licensed" or "filter to active projects (recently updated)" or "above 500 stars". Make them diverse — different angles (license, language, scope, complexity, use-case). Reference the statistics above when possible so every suggestion is grounded in real data.
 
-Return ONLY valid JSON — no markdown, no code fences, no commentary:
-["suggestion 1", "suggestion 2", "suggestion 3"]
+CRITICAL RULES:
+- NEVER output placeholder text like "suggestion 1", "suggest 1", "example", etc.
+- Return ONLY valid JSON array of 3-5 refinement strings:
+["only ${topLang} projects", "above 500 stars", "only ${topLic}-licensed"]
 
 JSON:`;
 
     const raw = await this.ollama.generate(prompt, this.model, signal, 512);
     try {
       const suggestions = this.parseJson<string[]>(raw);
-      return Array.isArray(suggestions) ? suggestions.slice(0, 6) : [];
+      if (!Array.isArray(suggestions)) return [];
+      const cleaned = suggestions
+        .map((s) => (typeof s === 'string' ? s.trim() : ''))
+        .filter((s) => s.length >= 3 && !/^(suggest(ion)?|example|phrase|query|item|keyword)(\s*\d+)?$/i.test(s));
+      return cleaned.slice(0, 6);
     } catch {
       return [];
     }
@@ -595,46 +701,30 @@ Explanation:`;
         ? `\nOriginal Vietnamese query: "${originalCriteria.originalQuery}"${originalCriteria.technicalConcepts?.length ? `\nOriginal tech concepts: ${originalCriteria.technicalConcepts.join(', ')}` : ''}`
         : '';
 
-    const prompt = `You are a GitHub search expert. A user searched for repositories and wants to refine the results.${preContext}
+    const prompt = `You are a GitHub search expert. Adjust search criteria based on user refinement instruction.${preContext}
 
 Original request: "${originalRequest}"${originalViBlock}
+Original keywords: ${originalCriteria.keywords.join(', ')}
+Original technologies: ${originalCriteria.technologies.join(', ') || 'none'}
+Original intent: ${originalCriteria.intent}
 
-Original search criteria:
-- Keywords: ${originalCriteria.keywords.join(', ')}
-- Technologies: ${originalCriteria.technologies.join(', ')}
-- Intent: ${originalCriteria.intent}
-- Min stars: ${originalCriteria.minStars}
-- Preferred license: ${originalCriteria.preferredLicense ?? 'none'}
+User refinement instruction: "${refinementText}"
 
-Refinement instruction from user: "${refinementText}"
-
-Analyze the refinement and adjust the search criteria. You can:
-- Adjust emphasis weights (e.g., "more DevOps focused" increases semanticMatch weight, "less enterprise, prefer Go" boosts languageMatch)
-- Add or remove technologies
-- Narrow or broaden the intent
-
-Return ONLY valid JSON — no markdown, no code fences, no commentary:
-
+Return ONLY valid JSON:
 {
-  "keywords": ["adjusted keywords"],
-  "technologies": ["adjusted technology list"],
-  "intent": "web-app | cli-tool | library | api | mobile-app | desktop-app | devops-tool | ai-ml-tool | database | networking-tool | security-tool | retail-pos | other",
-  "minStars": number,
-  "preferredLicense": "mit" | "apache-2.0" | "gpl-3.0" | "bsd-3-clause" | "mpl-2.0" | null,
-  "requireRecentActivity": boolean,
+  "keywords": ["updated keywords"],
+  "technologies": ["languages or frameworks mentioned"],
+  "intent": "${originalCriteria.intent}",
   "weightEmphasis": {
-    "semanticMatch": number (0.5-2.0, default 1.0),
-    "starsScore": number (0.5-2.0, default 1.0),
-    "activityScore": number (0.5-2.0, default 1.0),
-    "readmeRelevance": number (0.5-2.0, default 1.0),
-    "languageMatch": number (0.5-2.0, default 1.0),
-    "licenseCompatibility": number (0.5-2.0, default 1.0)
-  }${needsViContext ? ',\n  "englishTranslation": "English translation of the refined search intent",\n  "technicalConcepts": ["extracted technical concepts in English"]' : ''}
+    "semanticMatch": 1.0,
+    "starsScore": 1.0,
+    "languageMatch": 1.0
+  }${needsViContext ? ',\n  "englishTranslation": "English translation of the refined request"' : ''}
 }
 
 JSON:`;
 
-    const raw = await this.ollama.generate(prompt, this.model, signal, 512);
+    const raw = await this.ollama.generate(prompt, this.model, signal, 1024);
     const parsed = this.parseJson<{
       keywords?: string[];
       technologies?: string[];
@@ -691,15 +781,23 @@ JSON:`;
     const originalQuery = originalCriteria.originalQuery
       ?? (refinementIsVietnamese ? refinementText : undefined);
 
+    const cleanKeywords = (parsed.keywords ?? [])
+      .map(k => k.trim())
+      .filter(k => k.length >= 2 && !k.includes('keyword') && !INTENT_ANGLES[k]);
+    const finalKeywords = cleanKeywords.length > 0 ? cleanKeywords : originalCriteria.keywords;
+
     return {
-      keywords: parsed.keywords ?? originalCriteria.keywords,
-      technologies: parsed.technologies ?? originalCriteria.technologies,
-      intent: parsed.intent ?? originalCriteria.intent,
+      keywords: finalKeywords,
+      technologies: parsed.technologies?.length ? parsed.technologies : originalCriteria.technologies,
+      intent: parsed.intent && parsed.intent !== 'other' ? parsed.intent : originalCriteria.intent,
       useCase: originalRequest,
       minStars: typeof parsed.minStars === 'number' ? parsed.minStars : originalCriteria.minStars,
       preferredLicense: parsed.preferredLicense !== undefined ? parsed.preferredLicense : originalCriteria.preferredLicense,
       requireRecentActivity: parsed.requireRecentActivity ?? originalCriteria.requireRecentActivity,
       weightEmphasis: parsed.weightEmphasis,
+      benchmarkEntity: originalCriteria.benchmarkEntity,
+      targetFeatures: originalCriteria.targetFeatures,
+      topicTags: originalCriteria.topicTags,
       // Vietnamese fields — propagate through refinement
       ...(originalQuery || newTranslation ? {
         originalQuery,
@@ -713,15 +811,35 @@ JSON:`;
   private parseJson<T>(raw: string): T {
     let cleaned = raw.trim();
     if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/```(?:json)?\s*/g, '').trim();
+      cleaned = cleaned.replace(/```(?:json)?\s*/g, '').replace(/```\s*$/g, '').trim();
     }
     try {
       return JSON.parse(cleaned) as T;
     } catch {
       const match = cleaned.match(/\{[\s\S]*\}/);
       if (match) {
-        return JSON.parse(match[0]) as T;
+        try {
+          return JSON.parse(match[0]) as T;
+        } catch {}
       }
+
+      // Auto-repair truncated or unclosed JSON from smaller models
+      if (cleaned.includes('{')) {
+        let jsonStr = cleaned.slice(cleaned.indexOf('{')).trim();
+        jsonStr = jsonStr.replace(/,\s*"?[^"]*$/, '');
+        const quoteCount = (jsonStr.match(/(?<!\\)"/g) || []).length;
+        if (quoteCount % 2 !== 0) jsonStr += '"';
+        const openBrackets = (jsonStr.match(/\[/g) || []).length;
+        const closeBrackets = (jsonStr.match(/\]/g) || []).length;
+        for (let i = 0; i < openBrackets - closeBrackets; i++) jsonStr += ']';
+        const openBraces = (jsonStr.match(/\{/g) || []).length;
+        const closeBraces = (jsonStr.match(/\}/g) || []).length;
+        for (let i = 0; i < openBraces - closeBraces; i++) jsonStr += '}';
+        try {
+          return JSON.parse(jsonStr) as T;
+        } catch {}
+      }
+
       throw new Error(`Failed to parse LLM output as JSON. Raw: ${raw.slice(0, 200)}`);
     }
   }

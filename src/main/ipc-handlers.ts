@@ -1,21 +1,25 @@
-import { ipcMain, dialog } from 'electron';
+import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { spawn } from 'child_process';
 import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { app } from 'electron';
 import { OllamaClient } from './ollama/client';
+import { llmManager } from './llm/manager';
+import type { ILlmClient } from './llm/types';
 import { GitHubClient } from './github/client';
 import { QueryGenerator } from './search/query-gen';
 import { RefinementValidator } from './search/refinement-validator';
 import { RefinementParser } from './search/refinement-parser';
 import { searchCache, buildSearchCacheKey, criteriaCache } from './search/cache';
 import { RankingEngine } from './ranking/engine';
+import { vectorReranker } from './ranking/vector-reranker';
 import { SettingsStore } from './settings/store';
 import { BookmarkStore } from './bookmarks/store';
 import { IPC, type AppSettings, type GitHubRepo, type GitHubSearchResult, type SearchCriteria, type SearchTimings } from '../shared/types';
 import { boundedAllSettled } from './utils/concurrency';
 import { createPerformanceTracker } from './search/perf';
-import { VietnameseQueryExpander, VietnameseTranslationCache, translationCache, detectVietnamese, quickVietnameseTranslate, quickVietnameseTranslateStructured, VIETNAMESE_STOP_WORDS } from './search/vietnamese';
+import { VietnameseQueryExpander, VietnameseTranslationCache, translationCache, detectVietnamese, quickVietnameseTranslate, quickVietnameseTranslateStructured, extractTechTerms, VIETNAMESE_STOP_WORDS } from './search/vietnamese';
+import { detectAlternativeRequest } from './search/intent-decomposer';
 
 const settings = new SettingsStore();
 const bookmarks = new BookmarkStore();
@@ -125,6 +129,11 @@ function abortPriorSearch(gen: number): void {
 function getOllamaClient(cfg?: AppSettings) {
   const c = cfg ?? settings.load();
   return new OllamaClient(c.ollamaBaseUrl, c.ollamaApiKey || undefined);
+}
+
+function getLlmClient(cfg?: AppSettings): ILlmClient {
+  const c = cfg ?? settings.load();
+  return llmManager.getClient(c);
 }
 
 function getGitHubClient(cfg?: AppSettings) {
@@ -290,7 +299,11 @@ function deduplicateBatch(suggestions: string[]): string[] {
     return normCache.get(s)!;
   };
   for (const s of suggestions) {
-    const words = getWords(s);
+    const trimmed = s.trim();
+    if (!trimmed || /^(suggest(ion)?|example|phrase|query|item|keyword)(\s*\d+)?$/i.test(trimmed)) {
+      continue;
+    }
+    const words = getWords(trimmed);
     let isDuplicate = false;
     for (const existing of result) {
       const existingWords = getWords(existing);
@@ -298,12 +311,12 @@ function deduplicateBatch(suggestions: string[]): string[] {
       if (overlap === 0) continue;
       const union = new Set([...words, ...existingWords]).size;
       const jaccard = overlap / union;
-      if (jaccard >= 0.33) { isDuplicate = true; break; }
-      if (overlap >= 1 && (words.length === 1 || existingWords.length === 1)) {
+      if (jaccard >= 0.5) { isDuplicate = true; break; }
+      if (overlap >= 1 && (words.length === 1 || existingWords.length === 1) && words[0] === existingWords[0]) {
         isDuplicate = true; break;
       }
     }
-    if (!isDuplicate) result.push(s);
+    if (!isDuplicate) result.push(trimmed);
   }
   return result;
 }
@@ -313,9 +326,13 @@ const LICENSE_KEYWORDS = new Set(['mit', 'apache', 'gpl', 'bsd', 'mpl', 'lgpl', 
 
 /** #5: Ensures suggestion diversity — each dimension bucket gets at least one suggestion. */
 function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[] {
-  if (suggestions.length >= 5) return suggestions; // already diverse enough
+  const filtered = suggestions.filter(
+    (s) => s.trim().length >= 3 && !/^(suggest(ion)?|example|phrase|query|item|keyword)(\s*\d+)?$/i.test(s.trim()),
+  );
 
-  const lower = suggestions.map((s) => s.toLowerCase());
+  if (filtered.length >= 4) return filtered.slice(0, 6);
+
+  const lower = filtered.map((s) => s.toLowerCase());
 
   // Strip common punctuation before splitting to match correctly
   const PUNC_REGEX = /[,().:\-[\]]/g;
@@ -341,8 +358,10 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
     /recent|active|newest|latest|updated|maintained/i.test(s)
   );
 
-  // Fill missing language bucket
-  if (!hasLang && !hasLicense && !hasQuality && !hasRecency) return suggestions;
+  // If already diverse enough with semantic suggestions, keep as is
+  if (filtered.length >= 3 && !hasLang && !hasLicense && !hasQuality && !hasRecency) {
+    return filtered;
+  }
 
   if (!hasLang && repos.length > 0) {
     const langCount = new Map<string, number>();
@@ -354,8 +373,8 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
     const topLang = sorted.find(([lang]) =>
       !lower.some((s) => s.includes(lang.toLowerCase()))
     );
-    if (topLang && sorted.length >= 2) {
-      suggestions.push(`only ${topLang[0]} projects`);
+    if (topLang) {
+      filtered.push(`only ${topLang[0]} projects`);
     }
   }
 
@@ -370,7 +389,7 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
       .filter(([k]) => k !== 'none')
       .sort((a, b) => b[1] - a[1]);
     if (sorted.length > 0) {
-      suggestions.push(`only ${sorted[0][0].toUpperCase()}-licensed`);
+      filtered.push(`only ${sorted[0][0].toUpperCase()}-licensed`);
     }
   }
 
@@ -379,16 +398,16 @@ function guaranteeCoverage(suggestions: string[], repos: GitHubRepo[]): string[]
     const stars = repos.map((r) => r.stars).sort((a, b) => a - b);
     const median = stars[Math.floor(stars.length / 2)];
     if (median >= 100) {
-      suggestions.push(`above ${median.toLocaleString()} stars`);
+      filtered.push(`above ${median.toLocaleString()} stars`);
     }
   }
 
   // Fill missing recency bucket
   if (!hasRecency && repos.length > 0) {
-    suggestions.push('only recently updated');
+    filtered.push('only recently updated');
   }
 
-  return suggestions.slice(0, 6);
+  return filtered.slice(0, 6);
 }
 
 /**
@@ -450,9 +469,39 @@ function sendRefinementSuggestions(
 }
 
 export function registerIpcHandlers(): void {
-  // Pre-warm Ollama connection on startup — establishes TCP/TLS handshake
-  // in the background so the first search doesn't pay the connection cost.
-  getOllamaClient().checkConnection().catch(() => {});
+  const initialCfg = settings.load();
+  llmManager.init(initialCfg).catch(() => {});
+
+  llmManager.getEmbeddedEngine().on('status-changed', (embeddedStatus) => {
+    const wins = BrowserWindow.getAllWindows();
+    const currentCfg = settings.load();
+    for (const win of wins) {
+      win.webContents.send(IPC.LLM_STATUS_UPDATE, {
+        provider: currentCfg.llmProvider ?? 'embedded',
+        embedded: embeddedStatus,
+        ollama: { connected: false, models: [] },
+      });
+    }
+  });
+
+  ipcMain.handle(IPC.LLM_STATUS, async () => {
+    try {
+      const cfg = settings.load();
+      const status = await llmManager.getStatus(cfg);
+      return { ok: true, data: status };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle(IPC.LLM_DOWNLOAD_MODEL, async (_event, modelId?: any) => {
+    try {
+      await llmManager.getEmbeddedEngine().downloadModel(modelId);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
 
   ipcMain.handle(IPC.GET_SETTINGS, async () => {
     try {
@@ -465,6 +514,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.SAVE_SETTINGS, async (_event, newSettings) => {
     try {
+      if (newSettings?.embeddedModel) {
+        await llmManager.getEmbeddedEngine().setModel(newSettings.embeddedModel).catch(() => {});
+      }
       settings.save(newSettings);
       return { ok: true };
     } catch (err) {
@@ -517,9 +569,9 @@ export function registerIpcHandlers(): void {
 
     try {
       const cfg = settings.load();
-      const ollama = getOllamaClient(cfg);
+      const llm = getLlmClient(cfg);
       const github = getGitHubClient(cfg);
-      const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+      const qg = new QueryGenerator(llm, cfg.ollamaModel);
 
       // Vietnamese simple-query fix: translate before sending to GitHub API.
       // Without this, Vietnamese function words become mandatory AND-match terms.
@@ -578,11 +630,22 @@ export function registerIpcHandlers(): void {
         return { ok: true, data: { results, totalSearched: repos.length, suggestions: [] } };
       }
 
+      const altDetection = detectAlternativeRequest(userRequest);
+
       // ── Phase 1: fast keyword search — return immediately ──
       // Vietnamese Phase 1 fix: translate Vietnamese text before extracting fast keywords.
       // Without this, Vietnamese function words (tôi, muốn, cho) become mandatory GitHub
       // match terms, producing zero results for Vietnamese queries.
-      const fastKeywords = extractFastKeywords(effectiveRequest);
+      let fastKeywords = extractFastKeywords(effectiveRequest);
+      if (altDetection.isAlternative && altDetection.cleanCoreDomain) {
+        // For alternative searches (e.g. "thay thế cho Adobe PDF editor"),
+        // use canonical domain queries ("pdf toolkit", "pdf editor", etc.)
+        fastKeywords = [
+          ...(altDetection.suggestedQueries ?? [altDetection.cleanCoreDomain]),
+          ...(altDetection.suggestedTopics ?? []),
+        ];
+      }
+
       // Use only the first (most comprehensive) phrase as query.
       // Joining all phrases into one query creates a monster string with
       // repeated terms that GitHub API interprets as requiring ALL words,
@@ -594,7 +657,7 @@ export function registerIpcHandlers(): void {
         license: filters?.license ?? undefined,
         sort: 'stars' as const,
         order: 'desc' as const,
-        perPage: 10,
+        perPage: 20,
       };
 
       perf.beginPhase('github');
@@ -630,11 +693,14 @@ export function registerIpcHandlers(): void {
         const fastCriteria: SearchCriteria = {
           keywords: fastKeywords.slice(0, 3),
           technologies: [],
-          intent: 'other',
+          intent: altDetection.isAlternative ? 'desktop-app' : 'other',
           useCase: userRequest,
           minStars: 0,
           preferredLicense: null,
           requireRecentActivity: false,
+          benchmarkEntity: altDetection.benchmark,
+          targetFeatures: altDetection.suggestedFeatures,
+          topicTags: altDetection.suggestedTopics,
         };
 
         perf.beginPhase('ranking');
@@ -686,7 +752,8 @@ export function registerIpcHandlers(): void {
           // Pass pre-computed Vietnamese flag to avoid redundant detectVietnamese() call
           criteria = await qg.extractCriteria(userRequest, ac.signal, isVietnamese);
           perf.endPhase('ollama');
-        } catch {
+        } catch (err) {
+          console.warn('[search] extractCriteria failed, falling back to Phase 1:', err);
           // LLM failed — return Phase 1 results as fallback
           perf.endPhase('ollama');
           const criteriaMetrics = criteriaCache.getMetrics();
@@ -708,7 +775,7 @@ export function registerIpcHandlers(): void {
       if (isVietnamese && !criteria.englishTranslation) {
         try {
           perf.beginPhase('vietnamese');
-          const expander = new VietnameseQueryExpander(ollama, cfg.ollamaModel);
+          const expander = new VietnameseQueryExpander(llm, cfg.ollamaModel);
           const expansion = await expander.expand(userRequest, ac.signal, translationCache, viConfidence);
           perf.endPhase('vietnamese');
           if (expansion) {
@@ -795,6 +862,35 @@ export function registerIpcHandlers(): void {
         }
       }
 
+      // Prioritize high-recall domain queries for alternative searches (e.g. "pdf toolkit", "pdf editor")
+      if (altDetection.isAlternative && altDetection.suggestedQueries) {
+        const altParams: typeof allParams = [];
+        for (const sq of altDetection.suggestedQueries) {
+          altParams.push({
+            query: sq,
+            language: filters?.language ?? undefined,
+            minStars: 0,
+            license: filters?.license ?? criteria.preferredLicense ?? undefined,
+            sort: 'stars' as const,
+            order: 'desc' as const,
+            perPage: 20,
+          });
+        }
+        for (const p of allParams) {
+          const isDupe = altParams.some(ap => ap.query.toLowerCase().trim() === p.query.toLowerCase().trim());
+          if (!isDupe) {
+            altParams.push(p);
+          }
+        }
+        allParams = altParams;
+      }
+
+      // If unauthenticated, GitHub search API has strict rate limit (10 req/min).
+      // Cap allParams to 4 queries so we never get blocked.
+      if (!cfg.githubToken && allParams.length > 4) {
+        allParams = allParams.slice(0, 4);
+      }
+
       // Fire all LLM-generated queries with bounded concurrency
       const githubConcurrency = cfg.githubToken ? 5 : 3;
       const searchResults = await boundedAllSettled(
@@ -802,6 +898,12 @@ export function registerIpcHandlers(): void {
         githubConcurrency,
         ac.signal,
       );
+
+      for (const r of searchResults) {
+        if (r.status === 'rejected') {
+          console.warn('[github-search] Query failed:', (r as any).reason?.message || (r as any).reason);
+        }
+      }
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
@@ -871,9 +973,29 @@ export function registerIpcHandlers(): void {
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
 
-      // Rank with enriched criteria + README-enriched readmes map
+      // Solution 3: Semantic Vector Re-ranking (Dense embeddings + Cosine similarity)
+      let vectorScores: Map<number, number> | undefined;
+      if (filteredRepos.length > 0) {
+        try {
+          perf.beginPhase('ranking');
+          const semanticQuery = altDetection.isAlternative
+            ? `open-source alternative to ${altDetection.benchmark || 'commercial software'} with ${altDetection.suggestedFeatures?.slice(0, 5).join(' ')} ${altDetection.cleanCoreDomain || 'tools'}`
+            : (criteria.englishTranslation || criteria.useCase || userRequest);
+          vectorScores = await vectorReranker.rerankCandidates(
+            semanticQuery,
+            filteredRepos.slice(0, 30),
+            readmes,
+            llm,
+            ac.signal,
+          );
+        } catch (err) {
+          console.warn('[vector-reranking] Reranking skipped:', err);
+        }
+      }
+
+      // Rank with enriched criteria + README-enriched readmes map + semantic vector scores
       const ranked = filteredRepos.length > 0
-        ? await rankingEngine.rank(filteredRepos, criteria, readmes, userRequest, 50)
+        ? await rankingEngine.rank(filteredRepos, criteria, readmes, userRequest, 50, undefined, vectorScores)
         : [];
 
       const enrichedResults: GitHubSearchResult[] = ranked.map(({ repo, score }) => ({
@@ -973,8 +1095,8 @@ export function registerIpcHandlers(): void {
 
       // Helper: fire-and-forget new suggestions based on the refined result set
       const sendSuggestionsFor = (refinedRepos: GitHubRepo[]) => {
-        const ollama = getOllamaClient(cfg);
-        const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+        const llm = getLlmClient(cfg);
+        const qg = new QueryGenerator(llm, cfg.ollamaModel);
         sendRefinementSuggestions(
           sender, gen, qg, refinedRepos,
           lastSearchCache!.originalRequest, lastSearchCache!.originalCriteria,
@@ -1114,9 +1236,9 @@ export function registerIpcHandlers(): void {
         };
       }
 
-      // ── LLM fallback: pass to Ollama for full criteria refinement ──
-      const ollama = getOllamaClient(cfg);
-      const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+      // ── LLM fallback: pass to LLM for full criteria refinement ──
+      const llm = getLlmClient(cfg);
+      const qg = new QueryGenerator(llm, cfg.ollamaModel);
 
       let refinedCriteria: SearchCriteria;
       try {
@@ -1126,12 +1248,43 @@ export function registerIpcHandlers(): void {
           lastSearchCache.originalRequest,
         );
       } catch (llmErr) {
-        if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
-        const message = llmErr instanceof Error ? llmErr.message : String(llmErr);
-        return { ok: false, error: `Refinement analysis failed: ${message}` };
+        console.warn('[refinement] LLM refinement failed, applying heuristic fallback:', llmErr);
+        const newTech = extractTechTerms(refinementText);
+        refinedCriteria = {
+          ...lastSearchCache.originalCriteria,
+          keywords: [
+            ...lastSearchCache.originalCriteria.keywords,
+            refinementText.slice(0, 40),
+          ].slice(0, 5),
+          technologies: [
+            ...lastSearchCache.originalCriteria.technologies,
+            ...newTech,
+          ].filter((v, i, a) => a.indexOf(v) === i),
+          weightEmphasis: {
+            semanticMatch: 1.3,
+            starsScore: 1.0,
+            activityScore: 1.0,
+            readmeRelevance: 1.3,
+            languageMatch: newTech.length > 0 ? 1.5 : 1.0,
+            licenseCompatibility: 1.0,
+          },
+        };
       }
 
       if (searchGeneration !== gen) return { ok: false, error: 'Search superseded' };
+
+      let vectorScores: Map<number, number> | undefined;
+      try {
+        const queryText = refinedCriteria.englishTranslation || refinedCriteria.useCase || lastSearchCache.originalRequest;
+        vectorScores = await vectorReranker.rerankCandidates(
+          queryText,
+          lastSearchCache.repos.slice(0, 30),
+          lastSearchCache.readmes,
+          llm,
+        );
+      } catch {
+        // best effort vector re-ranking
+      }
 
       const ranked = await rankingEngine.rank(
         lastSearchCache.repos,
@@ -1140,6 +1293,7 @@ export function registerIpcHandlers(): void {
         lastSearchCache.originalRequest,
         50,
         refinedCriteria.weightEmphasis,
+        vectorScores,
       );
 
       // Staleness check after ranking
@@ -1330,8 +1484,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.GENERATE_EXPLANATION, async (_event, params: { repoName: string; repoDescription: string | null; requestContext: string }) => {
     try {
       const cfg = settings.load();
-      const ollama = getOllamaClient(cfg);
-      const qg = new QueryGenerator(ollama, cfg.ollamaModel);
+      const llm = getLlmClient(cfg);
+      const qg = new QueryGenerator(llm, cfg.ollamaModel);
       const explanation = await qg.generateMatchExplanation(
         params.repoName,
         params.repoDescription,

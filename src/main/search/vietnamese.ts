@@ -13,7 +13,7 @@
  *    extractCriteria), not a separate LLM invocation.
  */
 
-import type { OllamaClient } from '../ollama/client';
+import type { ILlmClient } from '../llm/types';
 
 // ── Vietnamese detection ──
 
@@ -649,7 +649,7 @@ export interface MultilingualExpansion {
  *   4. Alternative terminology (broad match)
  */
 export class VietnameseQueryExpander {
-  constructor(private ollama?: OllamaClient, private model?: string) {}
+  constructor(private ollama?: ILlmClient, private model?: string) {}
 
   /**
    * Expand a Vietnamese query into multilingual variants.

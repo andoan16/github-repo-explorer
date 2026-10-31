@@ -11,6 +11,92 @@ export interface OllamaStatus {
   models: OllamaModel[];
 }
 
+// ── Embedded Local LLM ──
+export type LlmProvider = 'embedded' | 'ollama';
+
+export type EmbeddedModelId = 'qwen2.5-0.5b' | 'qwen2.5-1.5b' | 'qwen2.5-3b';
+
+export interface EmbeddedModelOption {
+  id: EmbeddedModelId;
+  name: string;
+  paramSize: string;
+  filename: string;
+  url: string;
+  sizeBytes: number;
+  formattedSize: string;
+  recommendedMinRamGb: number;
+  tag: string;
+  description: string;
+}
+
+export const EMBEDDED_MODELS: Record<EmbeddedModelId, EmbeddedModelOption> = {
+  'qwen2.5-0.5b': {
+    id: 'qwen2.5-0.5b',
+    name: 'Qwen2.5-0.5B-Instruct',
+    paramSize: '0.5B',
+    filename: 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    sizeBytes: 491400032,
+    formattedSize: '~398 MB',
+    recommendedMinRamGb: 4,
+    tag: 'Nhẹ',
+    description: 'Tốc độ phản hồi nhanh, tiêu thụ ít tài nguyên RAM.',
+  },
+  'qwen2.5-1.5b': {
+    id: 'qwen2.5-1.5b',
+    name: 'Qwen2.5-1.5B-Instruct',
+    paramSize: '1.5B',
+    filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    sizeBytes: 1117320736,
+    formattedSize: '~1.0 GB',
+    recommendedMinRamGb: 8,
+    tag: 'Cân bằng',
+    description: 'Cân bằng giữa tốc độ và độ chính xác phân tích truy vấn.',
+  },
+  'qwen2.5-3b': {
+    id: 'qwen2.5-3b',
+    name: 'Qwen2.5-3B-Instruct',
+    paramSize: '3B',
+    filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
+    sizeBytes: 2104932768,
+    formattedSize: '~2.0 GB',
+    recommendedMinRamGb: 16,
+    tag: 'Chính xác cao',
+    description: 'Độ chính xác cao nhất, phân tích ngữ nghĩa sâu.',
+  },
+};
+
+export interface SystemSpecs {
+  totalMemoryBytes: number;
+  totalMemoryGb: number;
+  cpuCores: number;
+  cpuModel: string;
+  platform: string;
+  arch: string;
+  suggestedModelId: EmbeddedModelId;
+  recommendationReason: string;
+}
+
+export interface EmbeddedModelStatus {
+  status: 'not_downloaded' | 'downloading' | 'loading' | 'ready' | 'error';
+  progress?: number; // 0 - 100
+  downloadedBytes?: number;
+  totalBytes?: number;
+  modelId?: EmbeddedModelId;
+  modelName: string;
+  error?: string;
+  downloadedModels?: Record<EmbeddedModelId, boolean>;
+  systemSpecs?: SystemSpecs;
+}
+
+export interface LlmStatus {
+  provider: LlmProvider;
+  embedded: EmbeddedModelStatus;
+  ollama: OllamaStatus;
+}
+
 // ── GitHub ──
 export interface GitHubRepo {
   id: number;
@@ -54,6 +140,12 @@ export interface SearchCriteria {
   englishTranslation?: string;
   /** Extracted technical concepts from multilingual analysis */
   technicalConcepts?: string[];
+  /** Benchmark/proprietary commercial entity being replaced (e.g. 'Adobe', 'Notion') */
+  benchmarkEntity?: string;
+  /** Concrete core functional features (e.g. ['annotate', 'sign', 'merge', 'split']) */
+  targetFeatures?: string[];
+  /** GitHub topic tags to prioritize (e.g. ['pdf-editor', 'pdf-tools']) */
+  topicTags?: string[];
 }
 
 export interface SearchParams {
@@ -102,6 +194,8 @@ export type OllamaMode = 'local' | 'cloud';
 
 export interface AppSettings {
   githubToken: string;
+  llmProvider: LlmProvider;
+  embeddedModel: EmbeddedModelId;
   ollamaBaseUrl: string;
   ollamaApiKey: string; // Bearer token for Ollama Cloud (empty for local mode)
   ollamaMode: OllamaMode;
@@ -111,6 +205,8 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   githubToken: '',
+  llmProvider: 'embedded',
+  embeddedModel: 'qwen2.5-0.5b',
   ollamaBaseUrl: 'http://localhost:11434',
   ollamaApiKey: '',
   ollamaMode: 'local',
@@ -128,6 +224,9 @@ export interface Bookmark {
 export const IPC = {
   OLLAMA_CHECK: 'ollama:check',
   OLLAMA_MODELS: 'ollama:models',
+  LLM_STATUS: 'llm:status',
+  LLM_DOWNLOAD_MODEL: 'llm:downloadModel',
+  LLM_STATUS_UPDATE: 'llm:statusUpdate',
   GITHUB_CHECK: 'github:check',
   SEARCH: 'search:execute',
   GET_SETTINGS: 'settings:get',

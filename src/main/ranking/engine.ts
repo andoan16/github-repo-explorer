@@ -24,6 +24,8 @@ const INTENT_EMPHASIS: Record<string, WeightEmphasis> = {
   'retail-pos': { semanticMatch: 3.0, starsScore: 0.3, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'password-manager': { semanticMatch: 1.8, starsScore: 0.7, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'self-hosted': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'desktop-app': { semanticMatch: 2.2, starsScore: 0.5, activityScore: 1.4, readmeRelevance: 1.5, languageMatch: 0.8, licenseCompatibility: 1.0 },
+  'web-app': { semanticMatch: 2.0, starsScore: 0.5, activityScore: 1.4, readmeRelevance: 1.5, languageMatch: 0.8, licenseCompatibility: 1.0 },
   'monitoring': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'messaging': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'data-visualization': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
@@ -79,6 +81,7 @@ export class RankingEngine {
     preTokens?: string[],
     precomputedWeights?: Required<WeightEmphasis>,
     precomputed?: PrecomputedRepo,
+    vectorScore?: number,
   ): RelevanceScore {
     const tokens = preTokens ?? this.tokenize(criteria.keywords);
     const starsScore = this.normalizeStars(repo.stars);
@@ -91,23 +94,34 @@ export class RankingEngine {
       : this.readmeSignal(readme, tokens);
     let semanticMatch = this.baseSemanticScore(repo, criteria, tokens, precomputed);
 
+    // If neural/vector semantic similarity is available (Solution 3: Semantic Vector Re-ranking),
+    // blend dense vector similarity with sparse lexical/feature score.
+    if (typeof vectorScore === 'number' && !isNaN(vectorScore)) {
+      semanticMatch = 0.50 * semanticMatch + 0.50 * vectorScore;
+    }
+
     // Credibility penalty: repos with fewer than 100 stars get their semantic
     // match discounted. Prevents keyword-stuffed micro-repos from outranking
     // established projects with slightly different wording.
     //
-    // The penalty is scaled by the semantic score itself: repos with high
-    // semantic match (many token hits) are penalized less. This ensures niche
-    // domain repos that genuinely match the query (e.g., a canteen management
-    // system with 38 stars matching 9 tokens) aren't crushed by the same
-    // penalty as a keyword-stuffed repo matching 1-2 tokens.
-    // - semantic >= 0.5: penalty halved (0.6 → 0.8, 0.85 → 0.925)
-    // - semantic >= 0.3: penalty reduced by 1/3 (0.6 → 0.73, 0.85 → 0.90)
-    // - semantic <  0.3: full penalty (0.6, 0.85)
+    // However, if a repo explicitly matches the target domain's GitHub topic tags (e.g., pdf-editor)
+    // or implements multiple target features, it is a genuine functional tool (like pdfcraft)
+    // rather than spam, so we apply only a mild discount (0.9 instead of 0.6).
+    const topicsLower = precomputed?.topicsLower ?? repo.topics.map((t) => t.toLowerCase());
+    const descLower = precomputed?.descLower ?? (repo.description ?? '').toLowerCase();
+    const hasTopicMatch = criteria.topicTags?.some((t) => topicsLower.includes(t.toLowerCase()));
+    const hasFeatureMatch = criteria.targetFeatures && criteria.targetFeatures.filter((f) => descLower.includes(f.toLowerCase())).length >= 2;
+    const isDomainSpecialized = hasTopicMatch || hasFeatureMatch;
+
     if (repo.stars < 100) {
-      const factor = semanticMatch >= 0.5 ? 0.8 : semanticMatch >= 0.3 ? 0.73 : 0.6;
+      const factor = isDomainSpecialized
+        ? 0.9
+        : (semanticMatch >= 0.5 ? 0.8 : semanticMatch >= 0.3 ? 0.73 : 0.6);
       semanticMatch *= factor;
     } else if (repo.stars < 500) {
-      const factor = semanticMatch >= 0.5 ? 0.925 : semanticMatch >= 0.3 ? 0.90 : 0.85;
+      const factor = isDomainSpecialized
+        ? 0.95
+        : (semanticMatch >= 0.5 ? 0.925 : semanticMatch >= 0.3 ? 0.90 : 0.85);
       semanticMatch *= factor;
     }
 
@@ -141,6 +155,7 @@ export class RankingEngine {
     userRequest: string,
     maxResults: number,
     emphasis?: WeightEmphasis,
+    vectorScores?: Map<number, number>,
   ): Promise<{ repo: GitHubRepo; score: RelevanceScore }[]> {
     const candidates = repos.filter((r) => !r.archived);
     const tokens = this.tokenize(criteria.keywords);
@@ -176,8 +191,10 @@ export class RankingEngine {
 
     // Compute normalized weights ONCE instead of per-repo.
     // When no explicit emphasis is passed, apply intent-specific emphasis
-    // for niche domains where semantic relevance should dominate over stars.
-    const autoEmphasis = emphasis ?? INTENT_EMPHASIS[criteria.intent];
+    // or benchmark replacement emphasis where functional relevance should dominate over star count.
+    const autoEmphasis = emphasis ?? (criteria.benchmarkEntity
+      ? { semanticMatch: 2.5, starsScore: 0.4, activityScore: 1.5, readmeRelevance: 1.5, languageMatch: 0.8, licenseCompatibility: 1.0 }
+      : INTENT_EMPHASIS[criteria.intent]);
     const precomputedWeights = autoEmphasis ? computeNormalized(autoEmphasis) : DEFAULT_WEIGHTS;
 
     // Pre-compute lowercase metadata for all candidates (avoids repeated .toLowerCase() per scoring signal)
@@ -193,7 +210,17 @@ export class RankingEngine {
     if (candidates.length <= maxResults) {
       const scored = candidates.map((repo) => ({
         repo,
-        score: this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens, precomputedWeights, precomputedMap.get(repo.id)),
+        score: this.scoreRepo(
+          repo,
+          criteria,
+          readmes.get(repo.id) ?? null,
+          userRequest,
+          emphasis,
+          tokens,
+          precomputedWeights,
+          precomputedMap.get(repo.id),
+          vectorScores?.get(repo.id),
+        ),
       }));
       scored.sort((a, b) => b.score.total - a.score.total);
       return scored;
@@ -206,7 +233,17 @@ export class RankingEngine {
 
     for (let i = 0; i < candidates.length; i++) {
       const repo = candidates[i];
-      const score = this.scoreRepo(repo, criteria, readmes.get(repo.id) ?? null, userRequest, emphasis, tokens, precomputedWeights, precomputedMap.get(repo.id));
+      const score = this.scoreRepo(
+        repo,
+        criteria,
+        readmes.get(repo.id) ?? null,
+        userRequest,
+        emphasis,
+        tokens,
+        precomputedWeights,
+        precomputedMap.get(repo.id),
+        vectorScores?.get(repo.id),
+      );
       const entry = { repo, score };
 
       if (heap.length < maxResults) {
@@ -282,7 +319,12 @@ export class RankingEngine {
     for (const kw of keywords) {
       for (const word of kw.toLowerCase().split(/\s+/)) {
         const w = word.trim();
-        if (w.length >= 2 && !STOP_WORDS.has(w)) tokens.add(w);
+        if (w.length >= 2 && !STOP_WORDS.has(w)) {
+          tokens.add(w);
+          if (w.endsWith('s') && w.length >= 4) tokens.add(w.slice(0, -1));
+          if (w.endsWith('or') && w.length >= 5) tokens.add(w.slice(0, -2));
+          if (w.endsWith('er') && w.length >= 5) tokens.add(w.slice(0, -2));
+        }
       }
     }
     return [...tokens];
@@ -381,6 +423,30 @@ export class RankingEngine {
     for (const tech of criteria.technologies) {
       const t = tech.toLowerCase();
       if (desc.includes(t) || topics.includes(t)) score += 0.08;
+    }
+
+    // Topic-level matching: strong signal that the repository is intentionally categorized as this tool/app
+    if (criteria.topicTags && criteria.topicTags.length > 0) {
+      for (const topic of criteria.topicTags) {
+        const cleanT = topic.toLowerCase();
+        if (topics.includes(cleanT)) {
+          score += 0.18; // Exact topic tag match is a premier signal!
+        } else if (topics.some((t) => t.includes(cleanT) || cleanT.includes(t))) {
+          score += 0.08;
+        }
+      }
+    }
+
+    // Feature-level matching: checks if the repository implements core functional capabilities
+    if (criteria.targetFeatures && criteria.targetFeatures.length > 0) {
+      let featureHits = 0;
+      for (const feat of criteria.targetFeatures) {
+        const f = feat.toLowerCase();
+        if (desc.includes(f) || fullName.includes(f) || topics.some((t) => t.includes(f))) {
+          featureHits++;
+        }
+      }
+      score += Math.min(0.20, featureHits * 0.04);
     }
 
     // ── UseCase phrase matching ──

@@ -8,7 +8,7 @@ const shared = {
   platform: 'node',
   target: 'node20',
   format: 'cjs',
-  external: ['electron'],
+  external: ['electron', 'node-llama-cpp'],
   sourcemap: true,
 };
 

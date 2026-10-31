@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { boundedAllSettled, getGitHubConcurrency } from '@main/utils/concurrency';
+import { boundedAllSettled, getGitHubConcurrency } from '../../src/main/utils/concurrency';
 
 describe('boundedAllSettled', () => {
   it('returns empty array when no tasks provided', async () => {
@@ -67,7 +67,7 @@ describe('boundedAllSettled', () => {
 
     expect(task).not.toHaveBeenCalled();
     expect(result).toHaveLength(3);
-    result.forEach((res) => {
+    result.forEach((res: PromiseSettledResult<unknown>) => {
       expect(res.status).toBe('rejected');
       if (res.status === 'rejected') {
         expect(res.reason).toBeInstanceOf(DOMException);

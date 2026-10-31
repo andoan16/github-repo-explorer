@@ -1,6 +1,7 @@
 import type { OllamaModel, OllamaStatus } from '../../shared/types';
+import type { ILlmClient } from '../llm/types';
 
-export class OllamaClient {
+export class OllamaClient implements ILlmClient {
   constructor(
     private baseUrl: string,
     private apiKey?: string,
@@ -86,5 +87,20 @@ export class OllamaClient {
     const data = (await res.json()) as { response: string };
     if (!data.response) throw new Error('Ollama returned empty response');
     return data.response;
+  }
+
+  async getEmbedding(text: string, model?: string, signal?: AbortSignal): Promise<number[]> {
+    const res = await fetch(`${this.baseUrl}/api/embeddings`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({
+        model: model || 'nomic-embed-text',
+        prompt: text,
+      }),
+      signal,
+    });
+    if (!res.ok) throw new Error(`Ollama /api/embeddings failed: HTTP ${res.status}`);
+    const data = (await res.json()) as { embedding?: number[] };
+    return data.embedding ?? [];
   }
 }

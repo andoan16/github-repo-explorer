@@ -1,9 +1,44 @@
-import { useState, useCallback } from 'react';
-import type { OllamaStatus, OllamaModel } from '../../shared/types';
+import { useState, useCallback, useEffect } from 'react';
+import type { OllamaStatus, OllamaModel, EmbeddedModelStatus, LlmProvider } from '../../shared/types';
 
 export function useOllama() {
+  const [provider, setProvider] = useState<LlmProvider>('embedded');
+  const [embeddedStatus, setEmbeddedStatus] = useState<EmbeddedModelStatus>({
+    status: 'loading',
+    modelName: 'Qwen2.5-0.5B-Instruct (GGUF)',
+    progress: 0,
+  });
   const [status, setStatus] = useState<OllamaStatus>({ connected: false, models: [] });
   const [checking, setChecking] = useState(false);
+
+  const fetchLlmStatus = useCallback(async () => {
+    try {
+      const res = await window.repoExplorer.getLlmStatus();
+      if (res.ok && res.data) {
+        setProvider(res.data.provider);
+        setEmbeddedStatus(res.data.embedded);
+        setStatus(res.data.ollama);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLlmStatus();
+    const unsub = window.repoExplorer.onLlmStatusUpdate?.((data: any) => {
+      if (data?.provider) setProvider(data.provider);
+      if (data?.embedded) setEmbeddedStatus(data.embedded);
+      if (data?.ollama) setStatus(data.ollama);
+    });
+    return () => {
+      unsub?.();
+    };
+  }, [fetchLlmStatus]);
+
+  const downloadEmbeddedModel = useCallback(async (modelId?: string) => {
+    await window.repoExplorer.downloadEmbeddedModel?.(modelId);
+  }, []);
 
   const check = useCallback(async (baseUrl?: string, apiKey?: string) => {
     setChecking(true);
@@ -21,5 +56,14 @@ export function useOllama() {
     }
   }, []);
 
-  return { status, checking, check, refreshModels };
+  return {
+    provider,
+    embeddedStatus,
+    downloadEmbeddedModel,
+    status,
+    checking,
+    check,
+    refreshModels,
+    fetchLlmStatus,
+  };
 }

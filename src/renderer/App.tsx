@@ -5,6 +5,7 @@ import ResultCard from './components/ResultCard';
 import RepoDetail from './components/RepoDetail';
 import Settings from './components/Settings';
 import BookmarksPanel from './components/BookmarksPanel';
+import StatusBar from './components/StatusBar';
 import { useSettings } from './hooks/useSettings';
 import { useOllama } from './hooks/useOllama';
 import { useSearch } from './hooks/useSearch';
@@ -15,7 +16,15 @@ const defaultFilters: SearchFilters = { language: null, license: null, minStars:
 
 export default function App() {
   const { settings, saveSettings } = useSettings();
-  const { status: ollamaStatus, checking: ollamaChecking, check: checkOllama, refreshModels } = useOllama();
+  const {
+    provider,
+    embeddedStatus,
+    downloadEmbeddedModel,
+    status: ollamaStatus,
+    checking: ollamaChecking,
+    check: checkOllama,
+    refreshModels,
+  } = useOllama();
   const { searching, hasSearched, results, totalSearched, error, suggestions, selectedResult, setSelectedResult, execute, refine, loadMore, clear, moreAvailable, loadingMore, loadMoreError } = useSearch();
   const { bookmarks, isBookmarked, toggleBookmark, removeBookmark } = useBookmarks();
 
@@ -213,7 +222,8 @@ export default function App() {
     return () => obs.disconnect();
   }, [visibleCount, results.length, moreAvailable, loadingMore, loadMore]);
 
-  const readOnly = !ollamaStatus.connected;
+  const isEmbedded = (settings.llmProvider ?? 'embedded') === 'embedded';
+  const readOnly = isEmbedded ? false : !ollamaStatus.connected;
 
   return (
     <div className="app">
@@ -384,6 +394,9 @@ export default function App() {
       {showSettings && (
         <Settings
           settings={settings}
+          llmProvider={settings.llmProvider ?? provider ?? 'embedded'}
+          embeddedStatus={embeddedStatus}
+          onDownloadEmbeddedModel={downloadEmbeddedModel}
           ollamaModels={ollamaStatus.models}
           ollamaConnected={ollamaStatus.connected}
           ollamaError={ollamaStatus.error}
@@ -396,6 +409,15 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+
+      <StatusBar
+        llmProvider={settings.llmProvider ?? provider ?? 'embedded'}
+        embedded={embeddedStatus}
+        ollama={ollamaStatus}
+        githubChecked={githubChecked}
+        githubUser={githubUser}
+        onOpenSettings={() => setShowSettings(true)}
+      />
     </div>
   );
 }

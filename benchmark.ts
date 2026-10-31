@@ -1,4 +1,4 @@
-import { mineNegativeSpace } from './src/main/search/result-stats.ts';
+import { mineNegativeSpace } from './src/main/search/result-stats';
 
 const mockRepos = Array.from({ length: 100 }, (_, i) => ({
   id: i,

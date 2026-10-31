@@ -61,7 +61,14 @@ export class RefinementValidator {
     repos: GitHubRepo[],
     filters: { language?: string | null; license?: string | null; minStars?: number },
   ): { reason: string; kind: 'redundancy' | 'cardinality' } | null {
-    const lower = suggestion.toLowerCase();
+    const trimmed = suggestion.trim();
+
+    // ── Placeholder / dummy suggestion check ──
+    if (trimmed.length < 3 || /^(suggest(ion)?|example|phrase|query|item|keyword)(\s*\d+)?$/i.test(trimmed)) {
+      return { reason: 'dummy or empty placeholder', kind: 'redundancy' };
+    }
+
+    const lower = trimmed.toLowerCase();
 
     // ── Redundancy: already-filtered language ──
     const langMatch = this.extractLanguage(lower);

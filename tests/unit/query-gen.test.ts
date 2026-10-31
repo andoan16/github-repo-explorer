@@ -575,5 +575,37 @@ describe('QueryGenerator (unit)', () => {
       // No Vietnamese anywhere — should not inject pre-translation
       expect(promptArg).not.toContain('ALREADY TRANSLATED');
     });
+
+    it('successfully repairs and parses truncated LLM JSON output', async () => {
+      const truncatedRaw = '{ "keywords": ["pdf editor", "pdf toolkit", "web-app", "cli-tool", ';
+      const { qg } = createQg(truncatedRaw);
+
+      const originalCriteria = {
+        keywords: ['pdf', 'editor'],
+        technologies: [],
+        intent: 'desktop-app',
+        useCase: 'pdf editor',
+        minStars: 0,
+        preferredLicense: null,
+        requireRecentActivity: false,
+      };
+
+      const refined = await qg.refineCriteria(originalCriteria, 'more toolkit', 'pdf editor');
+      expect(refined).toBeDefined();
+      expect(refined.keywords).toContain('pdf editor');
+    });
+
+    it('filters out dummy placeholders like "suggestion 1" from generateRefinementSuggestions', async () => {
+      const { qg } = createQg('["suggestion 1", "suggestion 2", "only TypeScript projects", "suggest 3", "above 500 stars"]');
+      const suggestions = await qg.generateRefinementSuggestions(
+        'pdf editor',
+        ['pdf', 'editor'],
+        [],
+        'desktop-app',
+        10,
+        [],
+      );
+      expect(suggestions).toEqual(['only TypeScript projects', 'above 500 stars']);
+    });
   });
 });
