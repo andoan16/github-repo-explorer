@@ -52,15 +52,16 @@ export class SettingsStore {
   save(settings: AppSettings): void {
     try {
       const dir = join(this.filePath, '..');
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-      // Save non-secret settings to settings.json (without secrets)
-      const { githubToken: _token, ollamaApiKey: _ollamaKey, ...rest } = settings;
-      writeFileSync(this.filePath, JSON.stringify(rest, null, 2), 'utf-8');
+      // Save non-secret settings to settings.json (without secrets, prevent prototype pollution)
+      const { githubToken: _token, ollamaApiKey: _ollamaKey, ...rest } = settings || {};
+      const cleanSettings = JSON.parse(JSON.stringify(rest));
+      writeFileSync(this.filePath, JSON.stringify(cleanSettings, null, 2), { encoding: 'utf-8', mode: 0o600 });
 
-      // Save encrypted secrets to separate files
-      this.saveToken(settings.githubToken);
-      this.saveOllamaKey(settings.ollamaApiKey);
+      // Save encrypted secrets to separate files with restrictive permissions
+      this.saveToken(settings?.githubToken ?? '');
+      this.saveOllamaKey(settings?.ollamaApiKey ?? '');
     } catch (err) {
       console.error('Failed to save settings:', err);
     }
@@ -92,18 +93,18 @@ export class SettingsStore {
       if (!token) {
         // If token is empty, remove the file if it exists
         if (existsSync(this.tokenFilePath)) {
-          writeFileSync(this.tokenFilePath, Buffer.alloc(0));
+          writeFileSync(this.tokenFilePath, Buffer.alloc(0), { mode: 0o600 });
         }
         return;
       }
 
       if (safeStorage.isEncryptionAvailable()) {
         const encrypted = safeStorage.encryptString(token);
-        writeFileSync(this.tokenFilePath, encrypted);
+        writeFileSync(this.tokenFilePath, encrypted, { mode: 0o600 });
       } else {
         // Fallback: plaintext (legacy or Linux without libsecret)
         console.warn('[settings] safeStorage encryption unavailable — token stored in plaintext');
-        writeFileSync(this.tokenFilePath, token, 'utf-8');
+        writeFileSync(this.tokenFilePath, token, { encoding: 'utf-8', mode: 0o600 });
       }
     } catch (err) {
       console.error('Failed to save GitHub token:', err);
@@ -133,17 +134,17 @@ export class SettingsStore {
     try {
       if (!key) {
         if (existsSync(this.ollamaKeyFilePath)) {
-          writeFileSync(this.ollamaKeyFilePath, Buffer.alloc(0));
+          writeFileSync(this.ollamaKeyFilePath, Buffer.alloc(0), { mode: 0o600 });
         }
         return;
       }
 
       if (safeStorage.isEncryptionAvailable()) {
         const encrypted = safeStorage.encryptString(key);
-        writeFileSync(this.ollamaKeyFilePath, encrypted);
+        writeFileSync(this.ollamaKeyFilePath, encrypted, { mode: 0o600 });
       } else {
         console.warn('[settings] safeStorage encryption unavailable — Ollama key stored in plaintext');
-        writeFileSync(this.ollamaKeyFilePath, key, 'utf-8');
+        writeFileSync(this.ollamaKeyFilePath, key, { encoding: 'utf-8', mode: 0o600 });
       }
     } catch (err) {
       console.error('Failed to save Ollama API key:', err);

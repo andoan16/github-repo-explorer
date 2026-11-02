@@ -1,6 +1,7 @@
 import type { GitHubRepo, RelevanceScore, WeightEmphasis } from '../../shared/types';
 import type { SearchCriteria } from '../../shared/types';
 import { normalizeDiacritics } from '../search/vietnamese';
+import { CodeAwareTokenizer, computeExactIdentifierBoost } from './precision-optimizer';
 
 /** Precomputed default weights — avoids per-repo allocation on every score call. */
 const DEFAULT_WEIGHTS: Required<WeightEmphasis> = {
@@ -30,6 +31,8 @@ const INTENT_EMPHASIS: Record<string, WeightEmphasis> = {
   'messaging': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'data-visualization': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
   'testing': { semanticMatch: 1.5, starsScore: 0.8, activityScore: 1.0, readmeRelevance: 1.5, languageMatch: 1.0, licenseCompatibility: 1.0 },
+  'library': { semanticMatch: 2.2, starsScore: 0.4, activityScore: 1.0, readmeRelevance: 1.2, languageMatch: 1.5, licenseCompatibility: 1.0 },
+  'cli-tool': { semanticMatch: 2.2, starsScore: 0.4, activityScore: 1.2, readmeRelevance: 1.2, languageMatch: 1.0, licenseCompatibility: 1.0 },
 };
 
 function computeNormalized(emphasis: WeightEmphasis): Required<WeightEmphasis> {
@@ -111,17 +114,22 @@ export class RankingEngine {
     const descLower = precomputed?.descLower ?? (repo.description ?? '').toLowerCase();
     const hasTopicMatch = criteria.topicTags?.some((t) => topicsLower.includes(t.toLowerCase()));
     const hasFeatureMatch = criteria.targetFeatures && criteria.targetFeatures.filter((f) => descLower.includes(f.toLowerCase())).length >= 2;
-    const isDomainSpecialized = hasTopicMatch || hasFeatureMatch;
+    const hasExactMatch = computeExactIdentifierBoost(repo, criteria.keywords) >= 0.25;
+    const isDomainSpecialized = hasTopicMatch || hasFeatureMatch || hasExactMatch;
 
     if (repo.stars < 100) {
-      const factor = isDomainSpecialized
-        ? 0.9
-        : (semanticMatch >= 0.5 ? 0.8 : semanticMatch >= 0.3 ? 0.73 : 0.6);
+      const factor = hasExactMatch
+        ? 1.0
+        : isDomainSpecialized
+          ? 0.95
+          : (semanticMatch >= 0.5 ? 0.8 : semanticMatch >= 0.3 ? 0.73 : 0.6);
       semanticMatch *= factor;
     } else if (repo.stars < 500) {
-      const factor = isDomainSpecialized
-        ? 0.95
-        : (semanticMatch >= 0.5 ? 0.925 : semanticMatch >= 0.3 ? 0.90 : 0.85);
+      const factor = hasExactMatch
+        ? 1.0
+        : isDomainSpecialized
+          ? 0.98
+          : (semanticMatch >= 0.5 ? 0.925 : semanticMatch >= 0.3 ? 0.90 : 0.85);
       semanticMatch *= factor;
     }
 
@@ -208,28 +216,35 @@ export class RankingEngine {
     }
 
     if (candidates.length <= maxResults) {
-      const scored = candidates.map((repo) => ({
-        repo,
-        score: this.scoreRepo(
+      const scored: { repo: GitHubRepo; score: RelevanceScore }[] = [];
+      for (let i = 0; i < candidates.length; i++) {
+        const repo = candidates[i];
+        scored.push({
           repo,
-          criteria,
-          readmes.get(repo.id) ?? null,
-          userRequest,
-          emphasis,
-          tokens,
-          precomputedWeights,
-          precomputedMap.get(repo.id),
-          vectorScores?.get(repo.id),
-        ),
-      }));
+          score: this.scoreRepo(
+            repo,
+            criteria,
+            readmes.get(repo.id) ?? null,
+            userRequest,
+            emphasis,
+            tokens,
+            precomputedWeights,
+            precomputedMap.get(repo.id),
+            vectorScores?.get(repo.id),
+          ),
+        });
+        if ((i + 1) % 50 === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+      }
       scored.sort((a, b) => b.score.total - a.score.total);
       return scored;
     }
 
     // Heap-based top-K: O(n log k) instead of O(n log n)
     const heap: { repo: GitHubRepo; score: RelevanceScore }[] = [];
-    // Yield event loop every 100 repos to avoid blocking on large datasets
-    const YIELD_INTERVAL = 100;
+    // Yield event loop every 50 repos to avoid blocking on large datasets
+    const YIELD_INTERVAL = 50;
 
     for (let i = 0; i < candidates.length; i++) {
       const repo = candidates[i];
@@ -315,7 +330,8 @@ export class RankingEngine {
   }
 
   private tokenize(keywords: string[]): string[] {
-    const tokens = new Set<string>();
+    const parsed = CodeAwareTokenizer.tokenize(keywords);
+    const tokens = new Set<string>(parsed.allTokens);
     for (const kw of keywords) {
       for (const word of kw.toLowerCase().split(/\s+/)) {
         const w = word.trim();
@@ -418,6 +434,12 @@ export class RankingEngine {
       const k = kw.toLowerCase();
       if (k.length >= 4 && fullName.includes(k)) score += 0.1;
       if (k.length >= 4 && desc.includes(k)) score += 0.06;
+    }
+
+    // Exact identifier / repo slug boost (Precision Optimizer)
+    const exactBoost = computeExactIdentifierBoost(repo, criteria.keywords);
+    if (exactBoost > 0) {
+      score += exactBoost;
     }
 
     for (const tech of criteria.technologies) {

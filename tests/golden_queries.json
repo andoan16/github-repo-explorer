@@ -1,0 +1,643 @@
+[
+  {
+    "id": "q-001",
+    "query": "pdfcraft",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["pdfcraft"],
+      "technologies": [],
+      "intent": "desktop-app",
+      "useCase": "pdfcraft toolkit",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "PDFCraftTool/pdfcraft", "relevanceGrade": 3, "notes": "Exact target repository" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "random-dev/general-web-tools", "relevanceGrade": 0, "notes": "Generic tools with incidental mention" }
+    ]
+  },
+  {
+    "id": "q-002",
+    "query": "zustand react state management",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["zustand", "state management"],
+      "technologies": ["TypeScript", "React"],
+      "intent": "library",
+      "useCase": "zustand state management for react",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "pmndrs/zustand", "relevanceGrade": 3, "notes": "Exact state manager" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "facebook/react", "relevanceGrade": 1, "notes": "Mega 228k repo mentioning zustand in ecosystem" }
+    ]
+  },
+  {
+    "id": "q-003",
+    "query": "self-hosted password manager",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["password-manager", "self-hosted"],
+      "technologies": [],
+      "intent": "password-manager",
+      "useCase": "self-hosted password manager homelab",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "topicTags": ["password-manager", "self-hosted"]
+    },
+    "expected_targets": [
+      { "repoFullName": "dani-garcia/vaultwarden", "relevanceGrade": 3, "notes": "Primary self-hosted vault" },
+      { "repoFullName": "bitwarden/server", "relevanceGrade": 3, "notes": "Official backend" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "awesome-selfhosted/awesome-selfhosted", "relevanceGrade": 1, "notes": "Mega list repo, not an application" },
+      { "repoFullName": "password-cracker/hashcat", "relevanceGrade": 0, "notes": "Security tool, not a password manager" }
+    ]
+  },
+  {
+    "id": "q-004",
+    "query": "open source alternative to adobe acrobat pdf editor",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["pdf editor", "pdf toolkit"],
+      "technologies": [],
+      "intent": "desktop-app",
+      "useCase": "alternative to adobe acrobat pdf editor",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "benchmarkEntity": "Adobe Acrobat",
+      "topicTags": ["pdf-editor", "pdf-tools"],
+      "targetFeatures": ["edit", "merge", "convert"]
+    },
+    "expected_targets": [
+      { "repoFullName": "PDFCraftTool/pdfcraft", "relevanceGrade": 3, "notes": "Web-based PDF editor" },
+      { "repoFullName": "Stirling-Tools/Stirling-PDF", "relevanceGrade": 3, "notes": "Full PDF suite" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "adobe/brackets", "relevanceGrade": 0, "notes": "Unrelated code editor by Adobe" }
+    ]
+  },
+  {
+    "id": "q-005",
+    "query": "docker-compose.yml parser",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["docker-compose.yml", "parser"],
+      "technologies": ["Go"],
+      "intent": "library",
+      "useCase": "parse docker-compose.yml files",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "compose-spec/compose-go", "relevanceGrade": 3, "notes": "Official parser library for compose spec" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "kubernetes/kubernetes", "relevanceGrade": 0, "notes": "Mega container orchestration repo" }
+    ]
+  },
+  {
+    "id": "q-006",
+    "query": "itty-router micro router",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["itty-router", "micro router"],
+      "technologies": ["TypeScript", "JavaScript"],
+      "intent": "library",
+      "useCase": "ultra tiny router for cloudflare workers and microservices",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "kwhitley/itty-router", "relevanceGrade": 3, "notes": "Tiny 450-byte router for modern JS runtimes" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "expressjs/express", "relevanceGrade": 0, "notes": "64k stars mega framework, not a micro router" },
+      { "repoFullName": "vercel/next.js", "relevanceGrade": 0, "notes": "125k stars framework with built-in app router" }
+    ]
+  },
+  {
+    "id": "q-007",
+    "query": "kysely typescript sql query builder",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["kysely", "query builder", "sql"],
+      "technologies": ["TypeScript"],
+      "intent": "library",
+      "useCase": "type-safe typescript sql query builder",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "kysely-org/kysely", "relevanceGrade": 3, "notes": "Type-safe SQL query builder for TypeScript" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "prisma/prisma", "relevanceGrade": 1, "notes": "38k stars full ORM with custom DSL, not a lightweight query builder" },
+      { "repoFullName": "typeorm/typeorm", "relevanceGrade": 0, "notes": "33k stars heavy ActiveRecord/DataMapper ORM" }
+    ]
+  },
+  {
+    "id": "q-008",
+    "query": "radix-ui unstyled primitive components",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["radix-ui", "primitives", "unstyled components"],
+      "technologies": ["TypeScript", "React"],
+      "intent": "library",
+      "useCase": "unstyled accessible UI component primitives for React",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "radix-ui/primitives", "relevanceGrade": 3, "notes": "Unstyled accessible UI primitives" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "twbs/bootstrap", "relevanceGrade": 0, "notes": "170k stars opinionated CSS framework" },
+      { "repoFullName": "ant-design/ant-design", "relevanceGrade": 0, "notes": "90k stars heavy enterprise UI library" }
+    ]
+  },
+  {
+    "id": "q-009",
+    "query": "picocolors minimal terminal colors",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["picocolors", "terminal colors", "ansi"],
+      "technologies": ["JavaScript", "TypeScript"],
+      "intent": "library",
+      "useCase": "tiny zero-dependency library for terminal colors",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "alexeyraspopov/picocolors", "relevanceGrade": 3, "notes": "Tiny and fast library for terminal formatting" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "chalk/chalk", "relevanceGrade": 1, "notes": "22k stars standard terminal styling library" },
+      { "repoFullName": "torvalds/linux", "relevanceGrade": 0, "notes": "180k stars kernel, mentions terminal colors in drivers" }
+    ]
+  },
+  {
+    "id": "q-010",
+    "query": "zod typescript schema validation",
+    "category": "Star-Bias Stress Test",
+    "criteria": {
+      "keywords": ["zod", "schema validation"],
+      "technologies": ["TypeScript"],
+      "intent": "library",
+      "useCase": "typescript-first schema declaration and validation library",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "colinhacks/zod", "relevanceGrade": 3, "notes": "TypeScript-first schema validation with static type inference" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "jquense/yup", "relevanceGrade": 1, "notes": "Older JavaScript schema builder" },
+      { "repoFullName": "microsoft/TypeScript", "relevanceGrade": 0, "notes": "100k stars language compiler" }
+    ]
+  },
+  {
+    "id": "q-011",
+    "query": "@tanstack/react-query async state manager",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["@tanstack/react-query", "async state"],
+      "technologies": ["TypeScript", "React"],
+      "intent": "library",
+      "useCase": "declarative async state management and data fetching",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "TanStack/query", "relevanceGrade": 3, "notes": "Powerful asynchronous state management for TS/JS" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "facebook/react", "relevanceGrade": 0, "notes": "228k stars core library, mentions query in discussions" }
+    ]
+  },
+  {
+    "id": "q-012",
+    "query": "application.yml validator",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["application.yml", "validator"],
+      "technologies": ["Java"],
+      "intent": "cli-tool",
+      "useCase": "validate application.yml configuration files for spring",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "spring-tools/yaml-validator", "relevanceGrade": 3, "notes": "Dedicated application.yml schema validator" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "spring-projects/spring-boot", "relevanceGrade": 0, "notes": "74k stars framework, uses application.yml internally" }
+    ]
+  },
+  {
+    "id": "q-013",
+    "query": "libpng-sys rust wrapper",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["libpng-sys", "rust wrapper", "ffi"],
+      "technologies": ["Rust"],
+      "intent": "library",
+      "useCase": "raw FFI bindings to libpng for rust",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "kornelski/rust-libpng-sys", "relevanceGrade": 3, "notes": "FFI bindings to libpng" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "rust-lang/rust", "relevanceGrade": 0, "notes": "95k stars compiler, mentions libpng in build configs" }
+    ]
+  },
+  {
+    "id": "q-014",
+    "query": "fastapi-jwt-auth authentication extension",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["fastapi-jwt-auth", "jwt authentication"],
+      "technologies": ["Python"],
+      "intent": "library",
+      "useCase": "fastapi extension providing jwt authentication",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "IndominusByte/fastapi-jwt-auth", "relevanceGrade": 3, "notes": "FastAPI extension that provides JWT auth support" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "tiangolo/fastapi", "relevanceGrade": 1, "notes": "78k stars core framework, not the jwt extension" }
+    ]
+  },
+  {
+    "id": "q-015",
+    "query": "docker-compose.yml linter",
+    "category": "Special Syntax & File Conventions",
+    "criteria": {
+      "keywords": ["docker-compose.yml", "linter"],
+      "technologies": [],
+      "intent": "cli-tool",
+      "useCase": "linter and static analysis for docker-compose.yml files",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "hadolint/hadolint", "relevanceGrade": 3, "notes": "Dockerfile and compose file linter" },
+      { "repoFullName": "compose-spec/compose-go", "relevanceGrade": 2, "notes": "Compose spec validation tool" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "docker/compose", "relevanceGrade": 0, "notes": "34k stars runtime container orchestrator, not a linter" }
+    ]
+  },
+  {
+    "id": "q-016",
+    "query": "fzf",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["fzf"],
+      "technologies": ["Go"],
+      "intent": "cli-tool",
+      "useCase": "command-line fuzzy finder",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "junegunn/fzf", "relevanceGrade": 3, "notes": "Command-line fuzzy finder" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "neovim/neovim", "relevanceGrade": 0, "notes": "80k stars editor, mentions fzf plugin" },
+      { "repoFullName": "ohmyzsh/ohmyzsh", "relevanceGrade": 0, "notes": "170k stars zsh config, has fzf plugin" }
+    ]
+  },
+  {
+    "id": "q-017",
+    "query": "bat",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["bat"],
+      "technologies": ["Rust"],
+      "intent": "cli-tool",
+      "useCase": "cat clone with syntax highlighting and git integration",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "sharkdp/bat", "relevanceGrade": 3, "notes": "A cat clone with wings" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "torvalds/linux", "relevanceGrade": 0, "notes": "180k stars kernel, contains batch scripts" },
+      { "repoFullName": "microsoft/terminal", "relevanceGrade": 0, "notes": "95k stars windows terminal" }
+    ]
+  },
+  {
+    "id": "q-018",
+    "query": "jq",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["jq"],
+      "technologies": ["C"],
+      "intent": "cli-tool",
+      "useCase": "lightweight command-line JSON processor",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "jqlang/jq", "relevanceGrade": 3, "notes": "Command-line JSON processor" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "kubernetes/kubernetes", "relevanceGrade": 0, "notes": "110k stars repo, mentions jq in setup guides" }
+    ]
+  },
+  {
+    "id": "q-019",
+    "query": "act",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["act"],
+      "technologies": ["Go"],
+      "intent": "cli-tool",
+      "useCase": "run your github actions locally",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "nektos/act", "relevanceGrade": 3, "notes": "Run GitHub Actions locally" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "actions/runner", "relevanceGrade": 1, "notes": "GitHub Actions official runner" },
+      { "repoFullName": "freeCodeCamp/freeCodeCamp", "relevanceGrade": 0, "notes": "400k stars learning repo containing 'act' word" }
+    ]
+  },
+  {
+    "id": "q-020",
+    "query": "glow",
+    "category": "Ambiguous / Short Acronyms",
+    "criteria": {
+      "keywords": ["glow"],
+      "technologies": ["Go"],
+      "intent": "cli-tool",
+      "useCase": "render markdown on the CLI with style",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "charmbracelet/glow", "relevanceGrade": 3, "notes": "Terminal based markdown reader" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "pytorch/glow", "relevanceGrade": 1, "notes": "Neural network compute graph compiler" },
+      { "repoFullName": "tensorflow/tensorflow", "relevanceGrade": 0, "notes": "185k stars machine learning framework" }
+    ]
+  },
+  {
+    "id": "q-021",
+    "query": "self-hosted alternative to notion",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["notion alternative", "self-hosted wiki"],
+      "technologies": [],
+      "intent": "self-hosted",
+      "useCase": "self-hosted knowledge base and notion replacement",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "benchmarkEntity": "Notion",
+      "topicTags": ["notion-alternative", "wiki", "self-hosted"]
+    },
+    "expected_targets": [
+      { "repoFullName": "AppFlowy-IO/AppFlowy", "relevanceGrade": 3, "notes": "Open source alternative to Notion" },
+      { "repoFullName": "toeverything/AFFiNE", "relevanceGrade": 3, "notes": "Next-gen workspace alternative to Notion" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "awesome-selfhosted/awesome-selfhosted", "relevanceGrade": 1, "notes": "List of self-hosted services" },
+      { "repoFullName": "git/git", "relevanceGrade": 0, "notes": "Core version control" }
+    ]
+  },
+  {
+    "id": "q-022",
+    "query": "reverse proxy with automatic ssl",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["reverse proxy", "automatic ssl", "https"],
+      "technologies": [],
+      "intent": "networking-tool",
+      "useCase": "reverse proxy with automatic lets encrypt tls certificate renewal",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "topicTags": ["reverse-proxy", "ssl", "https"]
+    },
+    "expected_targets": [
+      { "repoFullName": "caddyserver/caddy", "relevanceGrade": 3, "notes": "Fast multi-platform web server with automatic HTTPS" },
+      { "repoFullName": "traefik/traefik", "relevanceGrade": 3, "notes": "Cloud native application proxy with automatic SSL" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "nginx/nginx", "relevanceGrade": 1, "notes": "Popular reverse proxy, but lacks native automatic SSL without certbot" },
+      { "repoFullName": "certbot/certbot", "relevanceGrade": 0, "notes": "SSL certificate client, not a reverse proxy" }
+    ]
+  },
+  {
+    "id": "q-023",
+    "query": "terminal-based git client",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["git client", "terminal ui", "tui"],
+      "technologies": [],
+      "intent": "cli-tool",
+      "useCase": "interactive terminal user interface for git",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "topicTags": ["git", "tui", "terminal"]
+    },
+    "expected_targets": [
+      { "repoFullName": "jesseduffield/lazygit", "relevanceGrade": 3, "notes": "Simple terminal UI for git commands" },
+      { "repoFullName": "extrawurst/gitui", "relevanceGrade": 3, "notes": "Blazing fast terminal-ui for git in Rust" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "git/git", "relevanceGrade": 1, "notes": "Core Git CLI tool without full-screen TUI" },
+      { "repoFullName": "desktop/desktop", "relevanceGrade": 0, "notes": "GitHub Desktop GUI, not a terminal client" }
+    ]
+  },
+  {
+    "id": "q-024",
+    "query": "open source alternative to postman",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["api client", "postman alternative"],
+      "technologies": [],
+      "intent": "desktop-app",
+      "useCase": "open source lightweight api client replacement for postman",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "benchmarkEntity": "Postman",
+      "topicTags": ["postman-alternative", "api-client"]
+    },
+    "expected_targets": [
+      { "repoFullName": "usebruno/bruno", "relevanceGrade": 3, "notes": "Fast and git-friendly opensource API client" },
+      { "repoFullName": "hoppscotch/hoppscotch", "relevanceGrade": 3, "notes": "Open source API development ecosystem" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "postmanlabs/postman-app-support", "relevanceGrade": 0, "notes": "Issue tracker for proprietary Postman" },
+      { "repoFullName": "curl/curl", "relevanceGrade": 0, "notes": "Low-level CLI tool, not a Postman IDE workspace" }
+    ]
+  },
+  {
+    "id": "q-025",
+    "query": "self-hosted error tracking sentry alternative",
+    "category": "Intent & Semantic Search",
+    "criteria": {
+      "keywords": ["error tracking", "sentry alternative", "exception monitoring"],
+      "technologies": [],
+      "intent": "monitoring",
+      "useCase": "self-hosted application error and exception monitoring platform",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false,
+      "benchmarkEntity": "Sentry",
+      "topicTags": ["error-tracking", "monitoring", "self-hosted"]
+    },
+    "expected_targets": [
+      { "repoFullName": "glitchtip/glitchtip", "relevanceGrade": 3, "notes": "Simple open source Sentry-compatible error tracking" },
+      { "repoFullName": "getsentry/sentry", "relevanceGrade": 3, "notes": "Official Sentry repository" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "grafana/grafana", "relevanceGrade": 1, "notes": "Metrics and dashboard visualization, not exception stack trace tracking" },
+      { "repoFullName": "elastic/elasticsearch", "relevanceGrade": 0, "notes": "General distributed search engine" }
+    ]
+  },
+  {
+    "id": "q-026",
+    "query": "csv parser in rust",
+    "category": "Language & Framework Constraints",
+    "criteria": {
+      "keywords": ["csv parser", "csv"],
+      "technologies": ["Rust"],
+      "intent": "library",
+      "useCase": "fast csv parser for rust",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "BurntSushi/rust-csv", "relevanceGrade": 3, "notes": "Fast CSV parsing library for Rust" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "pandas-dev/pandas", "relevanceGrade": 0, "notes": "44k stars Python data analysis library with read_csv" },
+      { "repoFullName": "d3/d3-dsv", "relevanceGrade": 0, "notes": "JavaScript delimiter-separated parser" }
+    ]
+  },
+  {
+    "id": "q-027",
+    "query": "oauth2 resource server java spring boot",
+    "category": "Language & Framework Constraints",
+    "criteria": {
+      "keywords": ["oauth2", "resource server", "spring boot"],
+      "technologies": ["Java"],
+      "intent": "library",
+      "useCase": "oauth2 resource server implementation for java spring boot",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "spring-projects/spring-security", "relevanceGrade": 3, "notes": "Spring Security OAuth2 resource server" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "oauthlib/oauthlib", "relevanceGrade": 0, "notes": "Python OAuth library" },
+      { "repoFullName": "golang/oauth2", "relevanceGrade": 0, "notes": "Go OAuth2 library" }
+    ]
+  },
+  {
+    "id": "q-028",
+    "query": "webrtc sfu golang",
+    "category": "Language & Framework Constraints",
+    "criteria": {
+      "keywords": ["webrtc", "sfu"],
+      "technologies": ["Go"],
+      "intent": "library",
+      "useCase": "selective forwarding unit (SFU) for WebRTC in Go",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "pion/ion-sfu", "relevanceGrade": 3, "notes": "Pure Go WebRTC SFU" },
+      { "repoFullName": "livekit/livekit", "relevanceGrade": 3, "notes": "Real-time video/audio stack written in Go" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "webrtc/samples", "relevanceGrade": 0, "notes": "16k stars JavaScript client-side browser samples" },
+      { "repoFullName": "google/webrtc", "relevanceGrade": 0, "notes": "C++ core WebRTC implementation" }
+    ]
+  },
+  {
+    "id": "q-029",
+    "query": "graphql client in python",
+    "category": "Language & Framework Constraints",
+    "criteria": {
+      "keywords": ["graphql client"],
+      "technologies": ["Python"],
+      "intent": "library",
+      "useCase": "graphql client for python applications",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "graphql-python/gql", "relevanceGrade": 3, "notes": "GraphQL client for Python" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "apollographql/apollo-client", "relevanceGrade": 0, "notes": "19k stars JS/TS client for web" },
+      { "repoFullName": "urql-graphql/urql", "relevanceGrade": 0, "notes": "JS/React GraphQL client" }
+    ]
+  },
+  {
+    "id": "q-030",
+    "query": "terminal dashboard in go",
+    "category": "Language & Framework Constraints",
+    "criteria": {
+      "keywords": ["terminal dashboard", "tui dashboard"],
+      "technologies": ["Go"],
+      "intent": "library",
+      "useCase": "terminal-based dashboard library for Go applications",
+      "minStars": 0,
+      "preferredLicense": null,
+      "requireRecentActivity": false
+    },
+    "expected_targets": [
+      { "repoFullName": "mum4k/termdash", "relevanceGrade": 3, "notes": "Terminal dashboard and widget library for Go" },
+      { "repoFullName": "gizak/termui", "relevanceGrade": 3, "notes": "Golang terminal dashboard library" }
+    ],
+    "negative_traps": [
+      { "repoFullName": "yaronn/blessed-contrib", "relevanceGrade": 0, "notes": "14k stars Node.js terminal dashboard library" }
+    ]
+  }
+]

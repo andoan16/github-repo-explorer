@@ -87,6 +87,7 @@ export class GitHubClient {
   // new instances (created by getGitHubClient()) don't lose cached READMEs.
   // This prevents duplicate API calls when Phase 1 + Phase 2 each create a client.
   private static readmeCache = new Map<number, CachedReadme>();
+  private static inFlightReadmes = new Map<number, Promise<string | null>>();
   private static readmeHits = 0;
   private static readmeMisses = 0;
 
@@ -215,63 +216,79 @@ export class GitHubClient {
       if (cached) {
         GitHubClient.readmeCache.delete(repoId);
       }
+      // In-flight coalescing: return pending Promise if repoId is currently being fetched
+      const inFlight = GitHubClient.inFlightReadmes.get(repoId);
+      if (inFlight) {
+        return inFlight;
+      }
     }
 
-    try {
-      const url = `${this.baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
-      const opts: RequestInit = {
-        headers: this.headers(),
-        signal,
-      };
-      (opts.headers as Record<string, string>)['Accept'] = 'application/vnd.github.raw+json';
-      const res = await fetchWithRetry(url, opts);
-      if (!res.ok) {
-        // Cache negative result too (null) so we don't retry 404s
-        if (repoId !== undefined) {
-          GitHubClient.setReadmeCache(repoId, null);
+    const fetchPromise = (async (): Promise<string | null> => {
+      try {
+        const url = `${this.baseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`;
+        const opts: RequestInit = {
+          headers: this.headers(),
+          signal,
+        };
+        (opts.headers as Record<string, string>)['Accept'] = 'application/vnd.github.raw+json';
+        const res = await fetchWithRetry(url, opts);
+        if (!res.ok) {
+          // Cache negative result too (null) so we don't retry 404s
+          if (repoId !== undefined) {
+            GitHubClient.setReadmeCache(repoId, null);
+          }
+          GitHubClient.readmeMisses++;
+          return null;
         }
+
+        // Check Content-Length to skip excessively large READMEs before downloading
+        const contentLength = parseInt(res.headers.get('content-length') ?? '0', 10);
+        if (contentLength > MAX_README_BYTES * 3) {
+          // README is huge — read only the portion we need
+          const reader = res.body?.getReader();
+          if (reader) {
+            let chunks = '';
+            let bytesRead = 0;
+            while (bytesRead < MAX_README_BYTES) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = new TextDecoder().decode(value, { stream: true });
+              chunks += chunk;
+              bytesRead += chunk.length;
+            }
+            reader.cancel().catch(() => {});
+            const result = chunks.length > MAX_README_BYTES
+              ? chunks.slice(0, MAX_README_BYTES) + '\n\n... (truncated)'
+              : chunks;
+            if (repoId !== undefined) {
+              GitHubClient.setReadmeCache(repoId, result);
+            }
+            return result;
+          }
+        }
+
+        const text = await res.text();
+        const result = text.length > MAX_README_BYTES ? text.slice(0, MAX_README_BYTES) + '\n\n... (truncated)' : text;
+
+        if (repoId !== undefined) {
+          GitHubClient.setReadmeCache(repoId, result);
+        }
+        GitHubClient.readmeMisses++;
+        return result;
+      } catch {
         GitHubClient.readmeMisses++;
         return null;
       }
+    })();
 
-      // Check Content-Length to skip excessively large READMEs before downloading
-      const contentLength = parseInt(res.headers.get('content-length') ?? '0', 10);
-      if (contentLength > MAX_README_BYTES * 3) {
-        // README is huge — read only the portion we need
-        const reader = res.body?.getReader();
-        if (reader) {
-          let chunks = '';
-          let bytesRead = 0;
-          while (bytesRead < MAX_README_BYTES) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = new TextDecoder().decode(value, { stream: true });
-            chunks += chunk;
-            bytesRead += chunk.length;
-          }
-          reader.cancel().catch(() => {});
-          const result = chunks.length > MAX_README_BYTES
-            ? chunks.slice(0, MAX_README_BYTES) + '\n\n... (truncated)'
-            : chunks;
-          if (repoId !== undefined) {
-            GitHubClient.setReadmeCache(repoId, result);
-          }
-          return result;
-        }
-      }
-
-      const text = await res.text();
-      const result = text.length > MAX_README_BYTES ? text.slice(0, MAX_README_BYTES) + '\n\n... (truncated)' : text;
-
-      if (repoId !== undefined) {
-        GitHubClient.setReadmeCache(repoId, result);
-      }
-      GitHubClient.readmeMisses++;
-      return result;
-    } catch {
-      GitHubClient.readmeMisses++;
-      return null;
+    if (repoId !== undefined) {
+      GitHubClient.inFlightReadmes.set(repoId, fetchPromise);
+      fetchPromise.finally(() => {
+        GitHubClient.inFlightReadmes.delete(repoId);
+      });
     }
+
+    return fetchPromise;
   }
 
   /** Return README cache performance metrics. */

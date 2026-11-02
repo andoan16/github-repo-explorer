@@ -21,28 +21,37 @@ export class BookmarkStore {
   }
 
   add(bookmark: Bookmark): Bookmark[] {
+    if (!bookmark || typeof bookmark !== 'object' || !bookmark.repo || !Number.isInteger(bookmark.repo.id)) {
+      return this.getAll();
+    }
     const all = this.getAll();
-    if (all.some((b) => b.repo.id === bookmark.repo.id)) return all;
+    if (all.some((b) => b.repo?.id === bookmark.repo.id)) return all;
+    // Cap maximum stored bookmarks to prevent disk exhaustion (CWE-400)
+    if (all.length >= 1000) {
+      all.pop();
+    }
     all.unshift(bookmark);
     this.write(all);
     return all;
   }
 
   remove(repoId: number): Bookmark[] {
-    const filtered = this.getAll().filter((b) => b.repo.id !== repoId);
+    if (!Number.isInteger(repoId)) return this.getAll();
+    const filtered = this.getAll().filter((b) => b.repo?.id !== repoId);
     this.write(filtered);
     return filtered;
   }
 
   isBookmarked(repoId: number): boolean {
-    return this.getAll().some((b) => b.repo.id === repoId);
+    if (!Number.isInteger(repoId)) return false;
+    return this.getAll().some((b) => b.repo?.id === repoId);
   }
 
   private write(data: Bookmark[]): void {
     try {
       const dir = join(this.filePath, '..');
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+      writeFileSync(this.filePath, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
     } catch (err) {
       console.error('Failed to save bookmarks:', err);
     }

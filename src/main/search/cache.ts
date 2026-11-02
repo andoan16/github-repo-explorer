@@ -20,11 +20,8 @@ export interface CacheMetrics {
   maxSize: number;
 }
 
-// TTLs aligned: search results last 15 min (was 10), criteria last 30 min.
-// The previous 10/30 mismatch caused criteria to reference queries whose
-// results had already expired, triggering redundant GitHub API calls.
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const MAX_CACHE_SIZE = 100; // was 50 — each search fills 3-6 slots, 50 was too small
+const MAX_CACHE_SIZE = 100;
 
 /**
  * TTL + LRU cache for GitHub search results.

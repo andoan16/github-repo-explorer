@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { GitHubSearchResult } from '../../shared/types';
+import { isRefinementDuplicate } from '../../shared/search-utils';
 
 interface SearchState {
   searching: boolean;
@@ -14,55 +15,6 @@ interface SearchState {
   /** Error from the last load-more attempt (rate limit, network, etc.) */
   loadMoreError: string | null;
 }
-
-function isRefinementDuplicate(text: string, applied: Set<string>): boolean {
-  if (applied.has(text)) return true;
-
-  const words = normalizeWords(text);
-  if (words.length === 0) return false;
-
-  for (const appliedText of applied) {
-    const appliedWords = normalizeWords(appliedText);
-    const overlap = words.filter((w) => appliedWords.includes(w)).length;
-    if (overlap === 0) continue;
-
-    const union = new Set([...words, ...appliedWords]).size;
-    const jaccard = overlap / union;
-
-    if (jaccard >= 0.33) return true;
-
-    if (
-      overlap >= 1 &&
-      (words.length === 1 || appliedWords.length === 1)
-    ) {
-      return true;
-    }
-
-    if (
-      overlap === Math.min(words.length, appliedWords.length) &&
-      overlap >= 2
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function normalizeWords(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s]/g, '')
-    .split(/\s+/)
-    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
-}
-
-const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'for', 'with', 'in', 'on', 'to', 'of',
-  'is', 'it', 'as', 'at', 'be', 'by', 'me', 'my', 'we', 'our', 'this',
-  'that', 'more', 'less', 'only', 'show', 'try', 'use', 'prefer', 'filter',
-  'switch', 'move', 'focus', 'keep', 'remove', 'add',
-]);
 
 export function useSearch() {
   const [state, setState] = useState<SearchState>({

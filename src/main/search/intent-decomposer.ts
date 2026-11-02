@@ -21,7 +21,7 @@ const KNOWN_BENCHMARKS: Record<
 > = {
   adobe_pdf: {
     canonical: 'Adobe Acrobat',
-    regex: /\badobe\s+(?:acrobat|pdf\s*editor|reader|pdf)?\b|\bpdf\s*editor\s+(?:của|of)\s+adobe\b/i,
+    regex: /\badobe\s+(?:acrobat|pdf\s*editor|reader|pdf)\b|\bacrobat\b|\bpdf\s*editor\s+(?:của|of)\s+adobe\b/i,
     coreDomain: 'pdf editor',
     features: ['edit', 'annotate', 'sign', 'merge', 'split', 'compress', 'convert', 'secure', 'ocr', 'form'],
     topics: ['pdf-editor', 'pdf-tools', 'pdf', 'pdf-manipulation', 'pdf-toolkit'],
@@ -29,7 +29,7 @@ const KNOWN_BENCHMARKS: Record<
   },
   adobe_photoshop: {
     canonical: 'Adobe Photoshop',
-    regex: /\badobe\s+(?:photoshop)?\b|\bphotoshop\b/i,
+    regex: /\badobe\s+photoshop\b|\bphotoshop\b/i,
     coreDomain: 'photo editor image manipulation',
     features: ['image-editor', 'layer', 'drawing', 'canvas', 'raster'],
     topics: ['image-editor', 'photo-editor', 'graphics'],
