@@ -1,34 +1,41 @@
 # Repo Explorer
 
-Discover GitHub repositories using natural-language descriptions via an embedded local LLM (Zero-config) or custom Ollama.
+Discover GitHub repositories using natural-language descriptions via an embedded local LLM (zero-config) or custom Ollama.
 
-Type what you need — "I want a self-hosted CI/CD platform with Docker support" — and the app uses a local LLM to understand your intent, search GitHub, and rank the best matches with explanations.
+Type what you need — *"I want a self-hosted CI/CD platform with Docker support"* or *"Công cụ quản lý cơ sở dữ liệu thời gian thực"* — and Repo Explorer uses local LLM intelligence, code-aware tokenization, and a hybrid ranking engine to understand your intent, query GitHub, and rank the best repositories with actionable explanations.
+
+---
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Desktop Shell | Electron 34 |
-| Frontend | React 18 + TypeScript |
-| Markdown Rendering | marked |
-| Build | Vite (renderer) + esbuild (main) |
-| LLM Runtime | Embedded Local LLM (`node-llama-cpp`, Metal/CPU) + Optional Ollama |
-| GitHub | REST API (authenticated) |
-| Testing | Vitest |
-| Packaging | electron-builder (NSIS installer / DMG) |
+| Layer | Technology | Description |
+|-------|------------|-------------|
+| **Desktop Shell** | Electron 34 | Cross-platform desktop runtime for macOS and Windows |
+| **Frontend** | React 18 + TypeScript | Component-based UI with custom hooks and responsive design |
+| **Markdown & Security** | marked + DOMPurify | Sanitized, high-fidelity README rendering |
+| **Build Tooling** | Vite (renderer) + esbuild (main) | Fast HMR in dev and optimized bundle generation |
+| **LLM Runtime** | Embedded Local LLM (`node-llama-cpp`, Metal/CPU) + Ollama | Zero-config Qwen2.5 GGUF models (0.5B, 1.5B, 3B) with optional external Ollama |
+| **Ranking & Precision** | Precision Optimizer + Vector Reranker | Code-aware tokenization, exact identifier boost, 6-signal scoring & Reciprocal Rank Fusion (RRF) |
+| **GitHub Integration** | REST API | Authenticated & unauthenticated queries, rate-limit awareness, bounded concurrency |
+| **Testing & IR Benchmark** | Vitest + Golden Evaluation Suite | 671 automated tests (606 unit + 65 integration) with 30-query IR benchmark (P@5, MRR, NDCG) |
+| **Load Testing** | Grafana k6 + Node.js harness | Stress testing pipeline measuring p95 and p99 latency under concurrent load |
+| **Packaging** | electron-builder | Native NSIS installer (`.exe`) and macOS disk image (`.dmg`) |
 
-**Why Electron over Tauri?** Single language (TypeScript) across main + renderer, mature ecosystem, no Rust toolchain required, and electron-builder produces polished installers for both platforms out of the box.
+---
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
-- A [GitHub Personal Access Token](https://github.com/settings/tokens) (classic token with `repo` and `read:user` scopes)
+- *(Recommended)* A [GitHub Personal Access Token](https://github.com/settings/tokens) (classic token with `repo` and `read:user` scopes or fine-grained token) for higher API rate limits (5,000 req/hr vs 60 req/hr)
 - *(Optional)* [Ollama](https://ollama.com/) if you prefer using external Ollama models instead of the built-in embedded LLM
+
+---
 
 ## Quick Start
 
 ```bash
-# Clone & enter the repo
+# Clone the repository
+git clone https://github.com/andoan16/repo-explorer.git
 cd repo-explorer
 
 # Install dependencies
@@ -38,502 +45,352 @@ npm install
 npm run dev
 ```
 
-The app window opens automatically. Configure your GitHub token and Ollama URL in Settings (gear icon, top-right), then type a search query.
+The app opens automatically:
+1. **Zero-Config Local LLM**: The app inspects your system RAM and CPU to suggest the best model tier (Qwen2.5 0.5B, 1.5B, or 3B) and downloads it seamlessly.
+2. **Optional External Ollama**: Switch to Ollama in Settings if you run your own local models or use Ollama Cloud.
+3. **GitHub Token**: Enter your token in Settings (gear icon, top-right) for uninterrupted searches.
 
-## Features
+---
 
-- **Tiered Embedded LLMs & Auto-Recommendation** — Choose between 3 local models from small to large (Qwen2.5 0.5B, 1.5B, and 3B); the app automatically inspects your RAM and CPU cores to recommend the optimal model for your machine
-- **Multi-query search** — Ollama or the local embedded LLM generates 3 alternative keyword queries from your description, run as parallel GitHub searches with automatic deduplication
-- **Vietnamese search** — Vietnamese queries are detected, translated, and enriched with synonym expansion and diacritics-stripped variants for broad recall on GitHub's English-dominant index
-- **Smart fast path** — simple/atomic queries (e.g. `docker`, `react`) skip the LLM entirely and go straight to GitHub search
-- **Iterative refinement** — Refine results inline (e.g. "more DevOps focused", "prefer Go", "sort by stars") to re-rank cached repos without re-hitting GitHub; deterministic refinements (sort, emphasis) skip the LLM entirely
-- **Lazy explanations** — Match explanations generated on demand when viewing repo details, keeping search fast
-- **Weighted ranking** — 6-signal relevance scoring with adjustable emphasis per refinement
-- **Bookmarks** — Save repositories to a persistent bookmark list for later reference; view, revisit, or remove saved repos anytime
-- **One-click clone** — Clone any repository to your local machine directly from the app, with a file-picker dialog to choose the destination
-- **Copy clone command** — Copy the full `git clone` command to clipboard for any repository
-- **Find similar** — Use any result as a seed to search for similar repositories
-- **Infinite scroll** — Automatically loads more results as you scroll; serves from in-memory cache first, then fetches from GitHub
-- **Theme support** — Choose between light, dark, or system-following theme in Settings
+## Key Features
+
+- **Tiered Embedded LLM & Auto Hardware Recommendation** — Out-of-the-box local LLM inference via `node-llama-cpp`. System RAM and CPU cores are automatically detected to suggest the optimal model:
+  - **Tier 1 (Qwen2.5-0.5B)**: Lightweight (~398 MB), minimal footprint for systems with <8 GB RAM.
+  - **Tier 2 (Qwen2.5-1.5B)**: Balanced (~986 MB), optimal for standard 8 GB–16 GB machines.
+  - **Tier 3 (Qwen2.5-3B)**: High accuracy (~1.9 GB), recommended for 16 GB+ RAM or Apple Silicon M-series.
+- **Search Precision Optimizer & Code-Aware Tokenization** — Splitting of camelCase and PascalCase identifiers (e.g. `pdfCraft` → `pdf`, `craft`), scoped package preservation, and technical keyword preservation (keeps terms like `class`, `server`, `for` from being stripped).
+- **Multi-Query Expansion & Hybrid RRF Ranking** — LLM produces 3 query variations with intent and technology filters; results are merged, deduplicated by Jaccard similarity, and ranked via a 6-signal scoring model with min-heap top-K and Reciprocal Rank Fusion.
+- **Vietnamese Language Intelligence** — Native Vietnamese query detection, structured dictionary translation, tech-term extraction, synonym expansion, and diacritics-stripped variants for broad recall across GitHub's English index.
+- **Smart Fast-Path** — Well-known technical keywords (e.g. `docker`, `react`, `redis`) bypass LLM latency and hit GitHub directly with instant cached responses.
+- **Iterative Refinement & Negative-Space Mining** — Inline refinement (e.g. *"prefer Go"*, *"sort by stars"*, *"more DevOps focused"*) re-ranks results in-memory. Result statistics identify underrepresented aspects (negative-space gaps) to propose relevant refinement chips.
+- **Interactive Match Breakdown & Lazy Explanations** — Match explanations and READMEs are loaded lazily on demand when inspecting repository cards.
+- **Persistent Bookmarks & Local Git Clone** — Bookmark favourite repositories to local JSON storage, copy `git clone` commands, or clone repositories directly into any directory via native system dialogs.
+- **Golden Evaluation & Benchmark Suite** — Automated Information Retrieval evaluation across 30 golden test queries measuring Precision@5, Recall@5, Mean Reciprocal Rank (MRR), and NDCG@10.
+
+---
 
 ## How It Works
 
-1. **You type a description** — natural language, no special syntax (supports English and Vietnamese)
-2. **Fast keyword extraction** — stop-word removal and compound-term detection produce an instant GitHub query; for known tech names (e.g. `docker`, `react`) the LLM is skipped entirely
-3. **LLM enriches the query** — Ollama generates 3 alternative keyword queries, plus technologies, intent, and license preferences; Vietnamese queries get additional deterministic enrichment (dictionary translation, synonym expansion, diacritics-stripped variants)
-4. **Parallel GitHub searches** — all queries deduplicated by Jaccard similarity (≥50% overlap for search queries, ≥33% for suggestions), then run simultaneously with bounded concurrency; results merged and deduplicated by repo ID
-5. **READMEs are prefetched** — for top 20 candidates by stars, with a 30-minute shared cache
-6. **Ranking engine scores each result** — combining 6 signals (weights adjustable via refinement):
-   - Semantic keyword/topic match (30%)
-   - Stars (20%)
-   - Recency of activity (15%)
-   - README relevance (15%)
-   - Language/framework match (10%)
-   - License compatibility (10%)
-7. **Results are displayed** — ranked cards with score badges; click for on-demand match explanation and breakdown
-8. **Suggestions appear async** — refinement chips generated from result statistics (language/license distribution, score spread, negative-space gaps)
+```
+1. User Query (English / Vietnamese)
+   ├── Fast-path check: Is it an atomic tech name? ──► [Direct GitHub Search]
+   └── Vietnamese Detection: Local dictionary translation & synonym expansion
+            │
+2. LLM Intent & Query Generation (Embedded / Ollama)
+   ├── Produces 3 query variations [q1, q2, q3]
+   ├── Extracts technologies, intent category, and license requirements
+   └── Strips duplicate queries via Jaccard similarity (overlap ≥ 50%)
+            │
+3. Parallel GitHub Retrieval
+   ├── Bounded concurrent requests with rate-limit tracking
+   └── Deduplication and merging by repository ID
+            │
+4. Precision Optimization & Ranking
+   ├── README prefetch for top candidates (30-min shared cache)
+   ├── Code-aware tokenization & exact identifier boost
+   ├── 6-signal relevance scoring:
+   │     • Semantic keyword & topic match (30%)
+   │     • Stars score (20%)
+   │     • Recency of updates (15%)
+   │     • README content relevance (15%)
+   │     • Language match (10%)
+   │     • License compatibility (10%)
+   └── Min-heap Top-K selection (O(n log k)) + Reciprocal Rank Fusion
+            │
+5. Delivery & Refinement Loop
+   ├── First 10 results rendered immediately; remaining cached for instant pagination
+   └── Background negative-space mining yields async refinement chips
+```
+
+---
 
 ## Project Architecture
 
-### Overview
+Repo Explorer enforces a strict separation between the **Main Process** (Node.js/Electron) and the **Renderer Process** (React). The renderer never executes filesystem, git, or external HTTP operations directly; all communication occurs through strongly-typed IPC handlers via a secure `contextBridge` preload layer.
 
-Repo Explorer is an Electron app with a clear main/renderer separation. All search logic, LLM calls, and GitHub API access live in the **main process** (Node.js). The **renderer** (React) sends user actions via IPC and receives results back — it never calls external APIs directly. A **preload script** bridges the two with a `contextBridge` API.
-
-### Architecture Diagram
+### System Architecture Diagram
 
 ```mermaid
 flowchart TB
-    subgraph Renderer ["Renderer Process (React)"]
-        SB[SearchBar]
-        RC[ResultCard / RepoDetail]
-        FL[Filters]
-        BP[BookmarksPanel]
-        RF[Refinement chips]
+    subgraph Renderer ["Renderer Process (React 18 + TypeScript)"]
+        SB["SearchBar"]
+        RC["ResultCard & RepoDetail"]
+        FL["Filters (Lang, License, Stars)"]
+        BP["BookmarksPanel"]
+        RF["Refinement Chips"]
+        STG["Settings Modal"]
+        US["useSearch Hook"]
+        SB & RF & FL --> US
     end
 
-    subgraph Preload ["Preload (contextBridge)"]
-        IPC["window.repoExplorer.*"]
+    subgraph Preload ["Preload Layer (contextBridge)"]
+        IPC["window.repoExplorer API"]
     end
 
-    subgraph Main ["Main Process (Node.js)"]
+    subgraph Main ["Main Process (Electron 34 / Node.js)"]
         direction TB
-        ICH[IPC Handlers]
 
-        subgraph Search ["Search Pipeline"]
-            QG[QueryGenerator]
-            QE[Vietnamese Expander]
-            SC[SearchCache + CriteriaCache]
+        subgraph Handlers ["Modular Domain IPC Handlers"]
+            H_SEARCH["search.handler.ts"]
+            H_LLM["llm.handler.ts"]
+            H_GIT["git.handler.ts"]
+            H_BOOKMARK["bookmark.handler.ts"]
+            H_SETTINGS["settings.handler.ts"]
         end
 
-        subgraph Ranking ["Ranking Engine"]
-            RE[RankingEngine<br/>6-signal weighted score]
+        subgraph SearchPipeline ["Search & Intelligence Pipeline"]
+            SS["SearchSession"]
+            QG["QueryGenerator"]
+            VN["Vietnamese Engine & Data"]
+            PO["Precision Optimizer (Code Tokenizer, RRF)"]
+            RE["RankingEngine (6-Signal Scoring)"]
+            VR["Vector Reranker"]
+            SC["SearchCache & CriteriaCache"]
         end
 
-        subgraph External ["External Clients"]
-            OLL[OllamaClient<br/>/api/generate]
-            GHL[GitHubClient<br/>REST API]
+        subgraph LLMModule ["LLM Execution Engine"]
+            LM["LlmManager"]
+            EMB["EmbeddedLlmEngine (node-llama-cpp)"]
+            SPECS["SystemSpecs (RAM / CPU Detector)"]
+            OLL["OllamaClient (Local / Cloud)"]
+            LM --> EMB & OLL
+            EMB --> SPECS
         end
 
-        ST[SettingsStore]
-        BK[BookmarkStore]
+        subgraph StorageClients ["External Clients & Storage"]
+            GH["GitHubClient (REST API, Readme Cache)"]
+            BS["BookmarkStore (JSON)"]
+            SS_STORE["SettingsStore (JSON)"]
+        end
     end
 
-    SB -->|"search(request, filters)"| IPC
-    RF -->|"refine(text)"| IPC
-    BP -->|"addBookmark / removeBookmark"| IPC
-    RC -->|"getReadme / generateExplanation"| IPC
+    US -->|"search(), refine(), getReadme()"| IPC
+    RC -->|"cloneRepo(), getReadme()"| IPC
+    BP -->|"addBookmark(), removeBookmark()"| IPC
+    STG -->|"saveSettings(), downloadModel()"| IPC
 
-    IPC -->|"ipcRenderer.invoke()"| ICH
+    IPC -->|"ipcRenderer.invoke()"| Handlers
 
-    ICH -->|"extractCriteria()"| QG
-    ICH -->|"quickVietnameseTranslate()"| QE
-    ICH -->|"buildSearchParamsArray()"| QG
-    ICH -->|"searchRepos()"| GHL
-    ICH -->|"getReadme()"| GHL
-    ICH -->|"generate() / refineCriteria()"| OLL
-    ICH -->|"rank()"| RE
-    ICH -->|"generateRefinementSuggestions()"| QG
-    ICH -->|"generateMatchExplanation()"| QG
+    H_SEARCH --> SS & QG & PO & RE & VR & GH & SC
+    H_LLM --> LM
+    H_GIT -->|"child_process git clone"| Main
+    H_BOOKMARK --> BS
+    H_SETTINGS --> SS_STORE
 
-    QG -->|"LLM prompt"| OLL
-    QG -->|"build queries"| SC
-    SC -.->|"cache hit/miss"| GHL
-
-    style Renderer fill:#e8f4fd,stroke:#2196f3,color:#000
-    style Preload fill:#fff3e0,stroke:#ff9800,color:#000
-    style Main fill:#f1f8e9,stroke:#4caf50,color:#000
-    style Search fill:#f3e5f5,stroke:#9c27b0,color:#000
-    style Ranking fill:#fce4ec,stroke:#e91e63,color:#000
-    style External fill:#efebe9,stroke:#795548,color:#000
+    QG --> VN & LM
 ```
 
-### End-to-End Data Flow
+---
 
-#### 1. User Input → Fast-Path Keyword Search (Phase 1)
+## Component Responsibilities
 
-```
-User types query  ──►  SearchBar  ──►  IPC: search(request, filters)
-                                                   │
-                                                   ▼
-                                          IPC Handler (main process)
-                                                   │
-                                    ┌──────────────┴──────────────┐
-                                    │  Is it a simple/atomic query?│
-                                    │  (e.g. "docker", "react")   │
-                                    └──────┬──────────────┬───────┘
-                                           │ Yes          │ No
-                                           ▼              ▼
-                                    Skip LLM       Vietnamese detection
-                                    extractFast     quickVietnameseTranslate()
-                                    Keywords()            │
-                                           │          (if needed)
-                                           ▼              │
-                                    GitHub search ◄────────┘
-                                    (1 query, cached)
-                                           │
-                                           ▼
-                                    Rank results ──► Return top 10
-```
+| Component | Path | Responsibility |
+|-----------|------|----------------|
+| **IPC Registry** | `src/main/ipc-handlers.ts` | Central dispatch registering domain handlers for clean modularity |
+| **Search Handler** | `src/main/handlers/search.handler.ts` | Orchestrates search lifecycle, fast-path, parallel fetch, ranking, pagination, and refinement |
+| **LLM Handler** | `src/main/handlers/llm.handler.ts` | Model status reporting, provider switching, specs suggestion, model download streaming |
+| **Git Handler** | `src/main/handlers/git.handler.ts` | Local git clone execution and destination folder selection dialogs |
+| **Bookmark Handler** | `src/main/handlers/bookmark.handler.ts` | Persistent bookmark creation, removal, and listing |
+| **Settings Handler** | `src/main/handlers/settings.handler.ts` | Settings persistence (tokens, provider preferences, theme) |
+| **LLM Manager** | `src/main/llm/manager.ts` | Bridges embedded local runtime and external Ollama clients |
+| **Embedded LLM Engine** | `src/main/llm/embedded-llm.ts` | `node-llama-cpp` GGUF engine managing model download, context initialization, and text generation |
+| **System Specs** | `src/main/llm/system-specs.ts` | System RAM and CPU core inspection for automated model tier recommendation |
+| **Precision Optimizer** | `src/main/ranking/precision-optimizer.ts` | Code-aware tokenization (camelCase splitting), technical keyword retention, identifier boosting, and RRF |
+| **Vector Reranker** | `src/main/ranking/vector-reranker.ts` | Semantic vector cosine similarity calculation for candidate reranking |
+| **Ranking Engine** | `src/main/ranking/engine.ts` | 6-signal weighted relevance scoring with min-heap top-K selection |
+| **Vietnamese Engine** | `src/main/search/vietnamese.ts` | Vietnamese detection, translation rules, and query normalization |
+| **Vietnamese Data** | `src/main/search/vietnamese-data.ts` | Domain dictionary, technical mapping table, and synonym database |
+| **Search Session** | `src/main/search/search-session.ts` | Stateful search session tracking query history, active criteria, pagination cursor, and refinement stack |
+| **Search Cache** | `src/main/search/cache.ts` | TTL + LRU caching for GitHub queries (15 min) and LLM criteria (30 min) |
 
-- **Simple queries** (known tech names like `docker`, `react`) skip the LLM entirely — they go straight to GitHub search with keyword extraction and return immediately.
-- **Vietnamese queries** get a local dictionary translation before the fast keyword search, so Phase 1 isn't blocked waiting for the LLM.
-- The `SearchCache` (TTL 15 min, LRU 100 entries) avoids redundant GitHub API calls for identical queries.
+---
 
-#### 2. LLM Enrichment (Phase 2 — runs inline, unified response)
+## Caching Architecture
 
-```
-User request ──►  OllamaClient.generate()
-                        │
-                        ▼
-            QueryGenerator.extractCriteria()
-                        │
-          ┌─────────────┼─────────────┐
-          ▼             ▼             ▼
-    searchQueries   technologies   intent
-    [q1, q2, q3]   [Go, Docker]   devops-tool
-                        │
-                        ▼
-     Vietnamese expansion (if detected)
-     ─ extractTechTerms(), expandGithubSynonyms()
-     ─ deterministic intent classification
-     ─ diacritics-stripped variant queries
-                        │
-                        ▼
-      buildSearchParamsArray(criteria)
-           │            │            │
-           ▼            ▼            ▼
-      query: q1     query: q2     query: q3
-      (+ VN variants, compound queries)
-           │            │            │
-           ▼            ▼            ▼
-      deduplicateSimilarQueries()
-                        │
-                        ▼
-         Parallel GitHub searches (boundedAllSettled)
-         concurrency: 5 (auth) or 3 (unauth)
-                        │
-                        ▼
-         Merge & deduplicate by repo ID
-```
+| Cache | Location | TTL | Capacity | Eviction Policy |
+|-------|----------|-----|----------|-----------------|
+| **GitHub Search Results** | `SearchCache` | 15 min | 100 entries | LRU with expired-first |
+| **LLM Search Criteria** | `CriteriaCache` | 30 min | 100 entries | LRU with expired-first |
+| **Vietnamese Translations** | `VietnameseTranslationCache` | 30 min | 200 entries | LRU with expired-first |
+| **README Content** | `GitHubClient.readmeCache` | 30 min | In-memory static | TTL expiration |
+| **Bookmarks** | `BookmarkStore` (Disk) | Persistent | Unbounded | User-managed |
+| **Settings** | `SettingsStore` (Disk) | Persistent | N/A | Direct write |
 
-- The LLM produces **3 keyword query variations** plus metadata (technologies, intent, license preference).
-- Vietnamese queries get **deterministic enrichment**: local tech-term extraction, synonym expansion, diacritics-stripped search variants — no extra LLM calls.
-- Search queries are **deduplicated** by Jaccard similarity (≥50% overlap for search queries, ≥33% for suggestions) before firing GitHub API calls.
-- Phase 1 and Phase 2 now run as a **unified search** — the handler awaits LLM enrichment, merges all results (fast-path + LLM queries), and returns enriched results in a single response. The renderer shows a loading spinner until results are ready.
-- The `CriteriaCache` (TTL 30 min) caches LLM-extracted criteria for identical queries.
+---
 
-#### 3. README Prefetch + Ranking
-
-```
-Merged repos (deduplicated)
-        │
-        ▼
-Sort by stars ──► Take top 20
-        │
-        ▼
-Parallel README fetch (top 20 by stars)
-  github.getReadme() × 20   ──►  30-min static cache
-        │                           (shared across client instances)
-        ▼
-  RankingEngine.rank(repos, criteria, readmes, userRequest, topK=50)
-        │
-        ├──► scoreRepo() for each candidate:
-        │      │
-        │      ├── Semantic keyword/topic match (30%)
-        │      │     token matching in name, description, topics
-        │      │     + intent-topic cluster alignment
-        │      │     + Vietnamese/expanded keyword matching
-        │      │     + useCase sub-phrase matching
-        │      │     + soft saturation (score / (1 + score))
-        │      │
-        │      ├── Stars (20%) ── log₁₀(stars) / 5
-        │      ├── Recency (15%) ── 1 - monthsAgo/36
-        │      ├── README relevance (15%) ── keyword hits in README
-        │      ├── Language match (10%) ── exact or partial match
-        │      └── License compatibility (10%) ── exact or permissive match
-        │
-        │   (all weights adjustable via refinement emphasis)
-        │
-        ▼
-  Top-K via min-heap (O(n log k)) ──► Return top 50, serve first 10
-```
-
-- READMEs are prefetched only for the **top 20 candidates by stars** — this is the main API cost driver. The 30-minute shared cache prevents re-fetching.
-- Ranking uses a **min-heap top-K algorithm** for efficiency — O(n log k) instead of full sort.
-- **Credibility penalty**: repos with <100 stars get 40% semantic-match discount; 100–499 stars get 15% discount.
-- **Refinement** can re-rank the same cached repos with adjusted weights — no new API calls needed.
-
-#### 4. Suggestions + Refinement Loop
-
-```
-Ranked results
-      │
-      ▼
-  generateRefinementSuggestions()  ──►  Ollama (fire-and-forget)
-      │                                       │
-      │   Result statistics ─────────────────┘
-      │   (language/license/star distribution,
-      │    negative-space gaps, score percentiles)
-      │
-      ▼
-  deduplicateBatch() + guaranteeCoverage()
-      │
-      ▼
-  IPC: SUGGESTIONS_UPDATE  ──►  Renderer shows refinement chips
-                                           │
-                                    User clicks chip ("only Go projects")
-                                           │
-                                           ▼
-                                    IPC: SEARCH_REFINE(text)
-                                           │
-                              ┌─────────────┴─────────────┐
-                              │                           │
-                        Deterministic?               Needs LLM?
-                        (sort/emphasis)               │
-                              │                       ▼
-                              │              refineCriteria() ──► Ollama
-                              │                       │
-                              ▼                       ▼
-                        Re-rank cached repos with adjusted criteria/weights
-                              │
-                              ▼
-                        Return re-ranked results (no GitHub API calls)
-```
-
-- Suggestion generation is **async and fire-and-forget** — it never blocks or delays the main results.
-- **Deterministic refinements** (sort by stars/forks/recency, weight emphasis like "more DevOps focused") skip the LLM entirely — instant re-ranking from cache.
-- The **RefinementParser** detects patterns like "sort by stars", "only Go", "prefer active" and maps them to weight adjustments without calling Ollama.
-
-#### 5. Pagination + Lazy Details
-
-```
-User scrolls to bottom ──► IPC: SEARCH_MORE
-      │
-      ├── Cache has unserved repos? ──► Return next 10 from memory (instant)
-      │
-      └── Cache exhausted? ──► Fetch next page from GitHub API
-                                    │
-                                    ▼
-                              Rank new page results + append
-
-User clicks a repo card ──► RepoDetail opens ──► IPC: GET_README
-                                                          │
-                                                          ▼
-                                              GitHub README fetch (cached)
-
-User clicks "Why this match?" ──► IPC: GENERATE_EXPLANATION
-                                          │
-                                          ▼
-                                  Ollama generates 1-2 sentence explanation
-```
-
-- **Pagination** first serves from the in-memory ranked cache (instant), only hitting GitHub when the cache is exhausted.
-- **READMEs** and **match explanations** are loaded lazily on demand — they're never fetched until the user actually opens a detail view.
-
-### Component Responsibilities
-
-| Component | File | Role |
-|-----------|------|------|
-| **OllamaClient** | `src/main/ollama/client.ts` | HTTP client for Ollama `/api/generate` and `/api/tags`. Connection check, model listing, text generation. |
-| **GitHubClient** | `src/main/github/client.ts` | Authenticated GitHub REST API client. Repo search, README fetch with 5xx retry, static README cache (shared across instances). |
-| **QueryGenerator** | `src/main/search/query-gen.ts` | LLM-powered criteria extraction, query generation, refinement, and suggestion generation. Vietnamese expansion pipeline. |
-| **RankingEngine** | `src/main/ranking/engine.ts` | 6-signal weighted relevance scoring with min-heap top-K. Adjustable weights via `WeightEmphasis`. |
-| **SearchCache** | `src/main/search/cache.ts` | TTL + LRU cache for GitHub search results (15 min) and LLM criteria (30 min). Metrics tracking. |
-| **PerformanceTracker** | `src/main/search/perf.ts` | Phase-level timing for search pipeline (ollama, github, ranking, readme) with cache metric aggregation. |
-| **Vietnamese Expander** | `src/main/search/vietnamese.ts` | Vietnamese detection, dictionary translation, tech-term extraction, synonym expansion, diacritics normalization. |
-| **RefinementParser** | `src/main/search/refinement-parser.ts` | Deterministic refinement detection (sort/emphasis patterns) — skips LLM when possible. |
-| **IPC Handlers** | `src/main/ipc-handlers.ts` | Central orchestrator. Handles search pipeline, refinement, pagination, lazy details, bookmarks, clone. Abort controllers for search supersession. Unified Phase 1+2 search (awaits LLM enrichment before returning results). |
-| **Preload** | `src/preload/index.ts` | `contextBridge` API — exposes `search()`, `refine()`, `searchMore()`, `getReadme()`, etc. to the renderer. |
-| **useSearch hook** | `src/renderer/hooks/useSearch.ts` | React state management for search. Tracks results, loading, paginating, applied refinements. Deduplicates suggestion chips. |
-
-### Caching Strategy
-
-| Cache | Location | TTL | Max Size | Eviction |
-|-------|----------|-----|----------|----------|
-| Search results | `SearchCache` (main process) | 15 min | 100 entries | LRU + expired-first |
-| LLM criteria | `CriteriaCache` (main process) | 30 min | 100 entries | LRU + expired-first |
-| Vietnamese translations | `VietnameseTranslationCache` (main process) | 30 min | 200 entries | LRU + expired-first |
-| README content | `GitHubClient.readmeCache` (static) | 30 min | unbounded | TTL expiry only |
-| Bookmarks | `BookmarkStore` (disk) | persistent | unbounded | N/A |
-| Settings | `SettingsStore` (disk) | persistent | N/A | N/A |
-
-## Scripts
+## Available Scripts
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start dev mode (hot-reload renderer, restart on main changes) |
-| `npm run build` | Build renderer + main process for production |
-| `npm run test` | Run unit tests |
-| `npm run test:watch` | Unit tests in watch mode |
-| `npm run test:integration` | Run integration tests (uses mocks by default) |
-| `npm run test:all` | Run all tests (unit + integration) |
-| `npm run package:win` | Package as Windows NSIS installer → `release/` |
-| `npm run package:mac` | Package as macOS DMG → `release/` |
-| `npm run package:all` | Package for both platforms |
-| `npm run lint` | Type-check all TypeScript files |
+| `npm run dev` | Start development mode (Vite HMR + Electron main process restart) |
+| `npm run build` | Compile renderer (Vite) and main/preload scripts (esbuild) |
+| `npm run test` | Run all Vitest unit tests (606 tests across 22 test suites) |
+| `npm run test:watch` | Run unit tests in interactive watch mode |
+| `npm run test:integration` | Run integration test suite (65 tests across 7 suites) |
+| `npm run test:all` | Run complete test suite (unit + integration, 671 tests) |
+| `npm run lint` | Type-check TypeScript codebase without emitting output |
+| `npm run package:mac` | Package application as macOS `.dmg` in `release/` |
+| `npm run package:win` | Package application as Windows NSIS `.exe` in `release/` |
+| `npm run package:all` | Package for both macOS and Windows platforms |
 
-## Building Releases
+---
 
-### Windows (.exe)
+## Benchmarks & Quality Assurance
 
+### Information Retrieval Golden Benchmark
+
+Repo Explorer includes a comprehensive Information Retrieval (IR) benchmark suite located in `tests/unit/search-evaluator-benchmark.test.ts` evaluated against `tests/fixtures/golden_queries.json`:
+
+- **30 Golden Queries** covering 5 categories: Developer Tools, Infrastructure & Databases, Frontend & Web, AI & Machine Learning, and Vietnamese queries with negative traps.
+- **Quantitative Metrics Measured**:
+  - **Precision@5**: Ratio of relevant repositories in the top 5 results.
+  - **Recall@5**: Coverage of known golden targets retrieved.
+  - **MRR (Mean Reciprocal Rank)**: Position of the first relevant result.
+  - **NDCG@10 (Normalized Discounted Cumulative Gain)**: Graded ranking quality.
+  - **Negative Trap Suppression**: Verification that irrelevant or deceptive repositories are suppressed from rank #1.
+
+Run the IR benchmark directly:
 ```bash
-npm run package:win
+npx vitest run tests/unit/search-evaluator-benchmark.test.ts
 ```
 
-Produces `release/Repo Explorer-1.0.1-setup.exe` (NSIS installer, ~80 MB).
+### k6 Performance & Load Testing
 
-### macOS (.app / .dmg)
+A performance test harness measures search pipeline latency under concurrent load:
 
-Must be run on a Mac — electron-builder cannot cross-compile macOS binaries from Windows or Linux.
+1. **Start the load-test harness server**:
+   ```bash
+   npx tsx scripts/load-test-server.ts
+   ```
+2. **Execute the k6 load test** (simulating 50 concurrent virtual users):
+   ```bash
+   k6 run scripts/k6/load-test.js
+   ```
+   *Threshold targets: p95 < 300 ms, p99 < 600 ms, failure rate < 1%.*
 
-```bash
-npm run package:mac
-```
-
-Produces `release/Repo Explorer-1.0.1.dmg`.
-
-### Custom App Icon
-
-Drop your icon files into the `build/` directory before packaging:
-
-| Platform | File | Format |
-|----------|------|--------|
-| Windows | `build/icon.ico` | ICO, 256×256 |
-| macOS | `build/icon.icns` | ICNS |
-
-Without these, the default Electron icon is used.
-
-## Running Tests
-
-```bash
-# Unit tests (fast, no external services needed)
-npm run test
-
-# Integration tests with mocks (default)
-npm run test:integration
-
-# Live integration tests (requires working Ollama + GitHub token)
-$env:RUN_INTEGRATION_TESTS = "true"
-$env:OLLAMA_TEST_URL = "http://localhost:11434"
-$env:GITHUB_TEST_TOKEN = "ghp_your_token_here"
-npm run test:integration
-
-# All tests together
-npm run test:all
-```
+---
 
 ## Project Structure
 
 ```
 repo-explorer/
-├── src/
-│   ├── main/                    # Electron main process
-│   │   ├── index.ts             # App entry, window creation
-│   │   ├── ipc-handlers.ts      # IPC bridge (frontend ↔ backend), search orchestrator
-│   │   ├── ollama/client.ts     # Ollama HTTP client (generate, models, connection check)
-│   │   ├── github/client.ts     # GitHub REST API client (search, README, token check)
-│   │   ├── search/              # Search pipeline
-│   │   │   ├── query-gen.ts     # LLM query extraction, refinement, suggestions
-│   │   │   ├── cache.ts         # TTL + LRU caches for search results & criteria
-│   │   │   ├── perf.ts          # Search pipeline performance tracking
-│   │   │   ├── vietnamese.ts    # Vietnamese detection, translation, synonym expansion
-│   │   │   ├── refinement-parser.ts    # Deterministic refinement detection (sort/emphasis)
-│   │   │   ├── refinement-validator.ts # LLM suggestion validation & dedup
-│   │   │   └── result-stats.ts  # Result set statistics & negative-space mining
-│   │   ├── ranking/engine.ts    # Multi-signal relevance scoring (6 signals, min-heap top-K)
-│   │   ├── bookmarks/store.ts   # JSON bookmark persistence
-│   │   ├── settings/store.ts    # JSON settings persistence
-│   │   └── utils/concurrency.ts # Bounded concurrency & GitHub rate-limit helpers
-│   ├── renderer/                # React frontend
-│   │   ├── App.tsx              # Root component
-│   │   ├── main.tsx             # React entry point
-│   │   ├── components/          # UI components
-│   │   │   ├── SearchBar.tsx    # Natural-language input
-│   │   │   ├── ResultCard.tsx   # Repository result card (bookmark, find similar, clone)
-│   │   │   ├── RepoDetail.tsx   # Full detail modal (README, explanation, clone)
-│   │   │   ├── Settings.tsx     # Settings panel (GitHub token, Ollama URL, model, theme)
-│   │   │   ├── StatusBar.tsx    # Connection status (Ollama + GitHub)
-│   │   │   ├── Filters.tsx      # Language/license/stars filters
-│   │   │   ├── MatchExplanation.tsx  # Score breakdown visualization
-│   │   │   ├── BookmarkButton.tsx    # Toggle bookmark on a result
-│   │   │   ├── BookmarksPanel.tsx    # Bookmark list & management
-│   │   │   ├── CloneButton.tsx       # Clone repo to local machine
-│   │   │   └── CopyButton.tsx        # Copy git clone command
-│   │   ├── hooks/               # React hooks
-│   │   │   ├── useSettings.ts
-│   │   │   ├── useOllama.ts
-│   │   │   ├── useSearch.ts
-│   │   │   └── useBookmarks.ts
-│   │   ├── types/index.ts       # Renderer-side type declarations
-│   │   └── styles/app.css       # Theme stylesheet
-│   ├── preload/index.ts         # Context bridge (secure IPC API)
-│   └── shared/types.ts          # Shared TypeScript types & IPC channel defs
-├── tests/
-│   ├── mocks/                   # Test doubles
-│   │   ├── ollama.ts
-│   │   └── github.ts
-│   ├── unit/                    # 351 test cases
-│   │   ├── ranking.test.ts      # Ranking engine (29 cases)
-│   │   ├── query-gen.test.ts    # Query extraction & search params (12 cases)
-│   │   ├── vietnamese.test.ts   # Vietnamese detection, translation, synonyms (225 cases)
-│   │   ├── refinement-parser.test.ts  # Deterministic refinement detection (24 cases)
-│   │   ├── refinement-validator.test.ts # Suggestion validation (10 cases)
-│   │   ├── refinement-dedup.test.ts   # Batch dedup logic (10 cases)
-│   │   ├── negative-space.test.ts     # Negative-space gap mining (12 cases)
-│   │   ├── result-stats.test.ts       # Result set statistics (6 cases)
-│   │   ├── readme-images.test.ts      # README image extraction (18 cases)
-│   │   └── bookmarks.test.ts    # Bookmark store logic (5 cases)
-│   └── integration/             # 65 test cases
-│       ├── e2e.test.ts          # Full pipeline + multi-query + refinement (10 cases)
-│       ├── error-handling.test.ts  # Error scenarios (13 cases)
-│       ├── github.test.ts       # GitHub auth + search + README (7 cases)
-│       ├── ollama.test.ts       # Ollama connection + generation (5 cases)
-│       ├── query-gen.test.ts    # Query extraction + param building (9 cases)
-│       ├── vietnamese-search.test.ts # Vietnamese search pipeline (17 cases)
-│       └── accuracy-pipeline.test.ts # Ranking accuracy (4 cases)
+├── .agents/skills/              # Agent skills & development playbooks
+├── build/                       # App icon assets (icon.ico, icon.icns)
 ├── scripts/
-│   └── build-main.mjs           # esbuild config for main + preload
-├── package.json                 # Dependencies, scripts, electron-builder config
-├── tsconfig.json                # Base TypeScript config
-├── tsconfig.main.json           # Main process TS config
-├── tsconfig.renderer.json       # Renderer TS config
-├── vite.config.ts               # Vite config for renderer
-├── vitest.config.ts             # Unit test config
-└── vitest.integration.config.ts # Integration test config
+│   ├── build-main.mjs           # esbuild configuration for main and preload
+│   ├── load-test-server.ts      # Standalone HTTP harness for k6 load tests
+│   └── k6/
+│       ├── load-test.js         # Grafana k6 performance testing script
+│       └── summary.json         # Load testing benchmark metrics
+├── src/
+│   ├── main/                    # Electron Main Process
+│   │   ├── index.ts             # Application lifecycle & browser window creation
+│   │   ├── ipc-handlers.ts      # Modular IPC handler dispatcher
+│   │   ├── handlers/            # Domain-specific IPC handlers
+│   │   │   ├── search.handler.ts    # Search, fast-path, pagination, refinement
+│   │   │   ├── llm.handler.ts       # Model status, switching, specs, download
+│   │   │   ├── git.handler.ts       # Git clone execution and dialogs
+│   │   │   ├── bookmark.handler.ts  # Bookmark store operations
+│   │   │   └── settings.handler.ts  # Settings store operations
+│   │   ├── llm/                 # LLM Abstraction & Engines
+│   │   │   ├── manager.ts       # Unified LLM client provider
+│   │   │   ├── embedded-llm.ts  # node-llama-cpp Qwen2.5 GGUF runtime
+│   │   │   ├── system-specs.ts  # Hardware RAM and CPU core detector
+│   │   │   └── types.ts         # LLM interfaces
+│   │   ├── ollama/
+│   │   │   └── client.ts        # Ollama HTTP API client (/api/generate, /api/tags)
+│   │   ├── github/
+│   │   │   └── client.ts        # GitHub REST client with rate limiting & README cache
+│   │   ├── search/              # Search & Query Processing Pipeline
+│   │   │   ├── query-gen.ts     # Criteria extraction, refinement, suggestions
+│   │   │   ├── intent-decomposer.ts # Query intent classification & decomposition
+│   │   │   ├── search-session.ts    # Search session state management
+│   │   │   ├── cache.ts         # LRU and TTL caches for results & criteria
+│   │   │   ├── perf.ts          # Pipeline execution profiling
+│   │   │   ├── vietnamese.ts    # Vietnamese translation & normalization
+│   │   │   ├── vietnamese-data.ts   # Linguistic dictionaries and synonym data
+│   │   │   ├── refinement-parser.ts    # Fast-path deterministic refinement
+│   │   │   ├── refinement-validator.ts # Suggestion chip validation & dedup
+│   │   │   └── result-stats.ts  # Negative-space analysis & result statistics
+│   │   ├── ranking/             # Ranking & Precision Algorithms
+│   │   │   ├── engine.ts             # 6-signal relevance scoring with min-heap top-K
+│   │   │   ├── precision-optimizer.ts# Code-aware tokenization & RRF fusion
+│   │   │   └── vector-reranker.ts    # Semantic vector embedding reranking
+│   │   ├── bookmarks/
+│   │   │   └── store.ts         # Persistent JSON bookmark store
+│   │   ├── settings/
+│   │   │   └── store.ts         # Persistent JSON settings store
+│   │   └── utils/
+│   │       └── concurrency.ts   # Bounded parallel execution helpers
+│   ├── preload/
+│   │   └── index.ts             # Secure contextBridge API definition
+│   ├── renderer/                # React Frontend
+│   │   ├── main.tsx             # React DOM entry point
+│   │   ├── App.tsx              # Root UI view
+│   │   ├── components/          # UI components
+│   │   │   ├── SearchBar.tsx        # Natural language input
+│   │   │   ├── ResultCard.tsx       # Repository display card
+│   │   │   ├── RepoDetail.tsx       # Detail modal with sanitized README
+│   │   │   ├── MatchExplanation.tsx  # Visual score breakdown
+│   │   │   ├── Filters.tsx          # Star, language, and license filters
+│   │   │   ├── Settings.tsx         # Settings modal (LLM, token, theme)
+│   │   │   ├── StatusBar.tsx        # Live status indicators
+│   │   │   ├── BookmarksPanel.tsx   # Saved repositories manager
+│   │   │   ├── BookmarkButton.tsx   # Bookmark toggle
+│   │   │   ├── CloneButton.tsx      # Native clone dialog trigger
+│   │   │   └── CopyButton.tsx       # Copy git clone command
+│   │   ├── hooks/               # Custom React hooks
+│   │   │   ├── useSearch.ts     # Search, pagination, and refinement state
+│   │   │   ├── useOllama.ts     # LLM status & model synchronization
+│   │   │   ├── useSettings.ts   # Settings state management
+│   │   │   └── useBookmarks.ts  # Bookmark collection state
+│   │   └── styles/
+│   │       └── app.css          # Theme styles (light, dark, system)
+│   └── shared/
+│       ├── types.ts             # Shared data models & IPC contracts
+│       └── search-utils.ts      # Shared tokenization and similarity helpers
+├── tests/
+│   ├── fixtures/
+│   │   └── golden_queries.json  # 30-query IR benchmark dataset
+│   ├── mocks/                   # Vitest doubles for GitHub & Ollama
+│   ├── unit/                    # 606 unit tests across 22 test files
+│   └── integration/             # 65 integration tests across 7 test files
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+├── vitest.config.ts
+└── vitest.integration.config.ts
 ```
 
-## Installing on Windows
+---
 
-1. Download `Repo Explorer-1.0.1-setup.exe` from the release
-2. Run the installer (NSIS)
-3. Click through the wizard — installs to `%LOCALAPPDATA%\Repo Explorer`
-4. Launch from Start Menu or desktop shortcut
+## Building Releases
 
-## Installing on macOS
+### macOS (.dmg)
+Packaging for macOS requires running on macOS:
+```bash
+npm run package:mac
+```
+Output: `release/Repo Explorer-1.0.2.dmg`
 
-1. Download `Repo Explorer-1.0.1.dmg` from the release
-2. Open the DMG and drag `Repo Explorer.app` to `/Applications`
-3. First launch: right-click → Open (to bypass Gatekeeper for unsigned apps)
+### Windows (.exe)
+```bash
+npm run package:win
+```
+Output: `release/Repo Explorer-1.0.2-setup.exe`
 
-## Error Handling
+---
 
-The app handles these failure modes:
+## Error Handling & Resiliency
 
-- **Ollama not installed/not running** — Status bar shows "Disconnected", search is disabled
-- **Invalid GitHub token** — Status bar shows "Invalid token", Settings shows error message
-- **GitHub rate limit** — Clear error message with reset time, suggests adding a token
-- **Empty results** — "No results" state with suggestion to broaden search
-- **LLM malformed output** — Falls back to raw keyword extraction, shows partial results
-- **Network failures** — Retryable error shown, connection status updated
-- **Partial query failure** — If some parallel search queries fail, results from successful queries are still shown
-- **Search superseded** — In-flight searches are cancelled when a new search starts; stale results are discarded
-- **Vietnamese zero recall** — If the fast-path keyword search returns no results for a Vietnamese query, the LLM enrichment phase runs anyway to produce a proper English query
+- **Automatic Model Download Recovery** — Embedded LLM downloads display real-time percentage progress and resume gracefully on transient connection drops.
+- **GitHub Rate Limit Protection** — The app monitors remaining rate limits via response headers. If limits are reached, the UI displays clear reset countdowns and prompts for a token.
+- **Search Supersession** — In-flight GitHub searches and LLM generation calls are cancelled via `AbortController` whenever the user triggers a new search.
+- **Graceful LLM Degradation** — If an LLM call fails or returns malformed output, the system seamlessly falls back to deterministic code-aware keyword extraction.
+- **Zero-Recall Recovery for Non-English Queries** — If fast-path keyword search produces zero results for Vietnamese queries, the pipeline automatically falls back to full LLM enrichment to guarantee recall.
 
-## Future Improvements
+---
 
-- **Streaming**: Stream Ollama responses for real-time UI updates during search
-- **History**: Save and revisit past searches
-- **Offline mode**: Search previously fetched results without network
-- **Model download UI**: Pull Ollama models from within the app
-- **Repository insights**: Show commit frequency, contributor count, release cadence
-- **Repo comparison**: Select two or more repos and compare them side-by-side across stars, forks, language, license, topics, and match explanation
+## License
+
+This project is licensed under the [MIT License](LICENSE).
